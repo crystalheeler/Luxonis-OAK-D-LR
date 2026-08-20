@@ -1,0 +1,81 @@
+# =============================================================================
+# OAK-D LR Camera — Home Assistant Configuration
+# =============================================================================
+# Add these snippets to your Home Assistant configuration files.
+# Replace <HA_IP> with the IP address of your Home Assistant Pi.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 1. configuration.yaml
+#    Add this to register the camera stream.
+# -----------------------------------------------------------------------------
+
+camera:
+  - platform: generic
+    name: "OAK-D LR"
+    still_image_url: "http://localhost:8765/snapshot"
+    stream_source: "http://localhost:8765/stream"
+    verify_ssl: false
+
+
+# -----------------------------------------------------------------------------
+# 2. automations.yaml (or paste into the Automations UI)
+#    Two automations: one for motion start, one for motion stop.
+#
+#    NOTE: Before using notify.mobile_app_your_phone, go to:
+#    Settings > Integrations and find your phone's Mobile App entry
+#    to get the exact notify service name.
+# -----------------------------------------------------------------------------
+
+# --- Motion started: record a clip and send a notification ---
+automation:
+  - alias: "OAK Camera - Motion Started"
+    description: "Triggered when the OAK-D LR detects motion"
+    trigger:
+      - platform: event
+        event_type: oak_camera_motion_started
+    action:
+      # Send a push notification (requires HA mobile app on your phone)
+      - service: notify.mobile_app_your_phone
+        data:
+          title: "Motion Detected"
+          message: "OAK-D LR detected motion at {{ now().strftime('%H:%M:%S') }}"
+          data:
+            # Attach a snapshot to the notification
+            image: "http://localhost:8765/snapshot"
+
+      # Record a clip to your Samba media folder
+      # The 'media' folder in HA maps to the /media share on your Pi
+      - service: camera.record
+        target:
+          entity_id: camera.oak_d_lr
+        data:
+          filename: >
+            /media/oak_recordings/motion_{{ now().strftime('%Y%m%d_%H%M%S') }}.mp4
+          duration: 30
+          lookback: 2
+
+  # --- Motion stopped: optional notification ---
+  - alias: "OAK Camera - Motion Stopped"
+    description: "Triggered when motion ends"
+    trigger:
+      - platform: event
+        event_type: oak_camera_motion_stopped
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          title: "Motion Cleared"
+          message: "OAK-D LR motion has stopped."
+
+
+# -----------------------------------------------------------------------------
+# 3. Dashboard card (Lovelace)
+#    Add this card to any dashboard to see the live feed.
+# -----------------------------------------------------------------------------
+
+type: picture-glance
+title: OAK-D LR
+camera_image: camera.oak_d_lr
+entities:
+  - entity: camera.oak_d_lr
