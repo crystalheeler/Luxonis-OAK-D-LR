@@ -1,0 +1,12 @@
+logLevel: warn
+logDestinations: [stdout]
+
+rtspAddress: :8765
+
+# Increase write queue to handle multiple simultaneous readers
+# (dashboard view + recording + any other clients)
+writeQueueSize: 512
+
+paths:
+  stream:
+    source: publisher

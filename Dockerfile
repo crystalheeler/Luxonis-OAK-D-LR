@@ -1,7 +1,6 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base-debian:bookworm
 FROM $BUILD_FROM
 
-# The HA base image is Debian-based — use apt, not apk
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
@@ -12,18 +11,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     udev \
     ffmpeg \
     curl \
+    tar \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install depthai via pip using Luxonis's ARM-compatible wheel index
+# Install mediamtx (RTSP server) for aarch64
+RUN curl -L https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/mediamtx_v1.9.0_linux_arm64v8.tar.gz \
+    | tar -xz -C /usr/local/bin mediamtx \
+    && chmod +x /usr/local/bin/mediamtx
+
+# Install depthai and requests
 RUN pip3 install --no-cache-dir --break-system-packages \
     requests \
     "depthai>=2.24" \
     --extra-index-url https://artifacts.luxonis.com/artifactory/luxonis-python-snapshot-local/
 
-# Copy app files
 COPY run.sh /
 COPY oak_bridge.py /
+COPY mediamtx.yml /
 
 RUN chmod a+x /run.sh
 

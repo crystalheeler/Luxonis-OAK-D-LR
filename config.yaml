@@ -1,6 +1,6 @@
 name: "OAK-D LR Camera"
-description: "Connects to a Luxonis OAK-D LR PoE camera, serves an MJPEG stream for Home Assistant, and fires motion events."
-version: "1.4.0"
+description: "Connects to a Luxonis OAK-D LR PoE camera, serves an RTSP stream and snapshot for Home Assistant, and fires motion events."
+version: "1.7.0"
 slug: "oak_camera"
 init: false
 host_network: true
@@ -29,3 +29,4 @@ map:
     read_only: false
 
 homeassistant_api: true
+changelog: CHANGELOG.md

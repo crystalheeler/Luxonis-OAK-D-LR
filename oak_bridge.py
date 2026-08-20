@@ -1,10 +1,14 @@
 """
-OAK-D LR  →  Home Assistant Bridge (DepthAI v3 API)
------------------------------------------------------
+OAK-D LR  →  Home Assistant Bridge (DepthAI v3 + mediamtx RTSP)
+-----------------------------------------------------------------
 - Connects to the OAK-D LR over PoE using DepthAI v3
 - Detects motion via frame differencing
-- Serves an MJPEG HTTP stream on a configurable port
+- Pipes frames into ffmpeg which publishes to mediamtx RTSP server
+- Serves a JPEG snapshot over HTTP for HA dashboard thumbnail
 - Fires events to Home Assistant via REST API when motion starts/stops
+
+RTSP stream:  rtsp://<ha-ip>:8765/stream
+Snapshot:     http://<ha-ip>:8766/snapshot
 """
 
 import os
@@ -15,6 +19,7 @@ import threading
 import time
 import logging
 import requests
+import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
 
@@ -26,28 +31,33 @@ logging.basicConfig(
 log = logging.getLogger("oak-bridge")
 
 # ==============================================================================
-# Config from environment variables (set by run.sh from HA app options)
+# Config from environment variables
 # ==============================================================================
 
 CAMERA_IP        = os.environ.get("CAMERA_IP", "").strip() or None
-MJPEG_PORT       = int(os.environ.get("MJPEG_PORT", 8765))
+RTSP_PORT        = int(os.environ.get("MJPEG_PORT", 8765))
+SNAPSHOT_PORT    = RTSP_PORT + 1  # snapshot on next port e.g. 8766
 MOTION_THRESHOLD = int(os.environ.get("MOTION_THRESHOLD", 25))
 MIN_MOTION_AREA  = int(os.environ.get("MIN_MOTION_AREA", 5000))
 HA_URL           = os.environ.get("HA_URL", "http://homeassistant.local:8123").rstrip("/")
 HA_TOKEN         = os.environ.get("HA_TOKEN", "").strip()
 
+# Reduced resolution and FPS to ease load on Raspberry Pi 4
 FRAME_WIDTH  = 1280
-FRAME_HEIGHT = 800
-FPS          = 20
+FRAME_HEIGHT = 720
+FPS          = 15
 POST_MOTION_FRAMES = FPS * 4
+
+RTSP_PUBLISH_URL = f"rtsp://localhost:{RTSP_PORT}/stream"
 
 # ==============================================================================
 # Shared state
 # ==============================================================================
 
+motion_active    = False
+ffmpeg_proc      = None
 latest_jpeg      = None
 latest_jpeg_lock = threading.Lock()
-motion_active    = False
 
 
 # ==============================================================================
@@ -87,14 +97,80 @@ def detect_motion(prev_gray, curr_gray):
 
 
 # ==============================================================================
-# Camera thread — DepthAI v3 API
+# ffmpeg publisher
+# ==============================================================================
+
+def start_ffmpeg():
+    cmd = [
+        "ffmpeg",
+        "-loglevel", "warning",
+        "-f", "rawvideo",
+        "-pixel_format", "bgr24",
+        "-video_size", f"{FRAME_WIDTH}x{FRAME_HEIGHT}",
+        "-framerate", str(FPS),
+        "-i", "pipe:0",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-tune", "zerolatency",
+        "-b:v", "1000k",
+        "-f", "rtsp",
+        "-rtsp_transport", "tcp",
+        RTSP_PUBLISH_URL
+    ]
+    log.info(f"Starting ffmpeg publisher → {RTSP_PUBLISH_URL}")
+    return subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+
+# ==============================================================================
+# Snapshot HTTP server
+# ==============================================================================
+
+class SnapshotHandler(BaseHTTPRequestHandler):
+
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        if self.path == "/snapshot":
+            with latest_jpeg_lock:
+                frame = latest_jpeg
+            if frame:
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(frame)))
+                self.end_headers()
+                self.wfile.write(frame)
+            else:
+                self.send_response(503)
+                self.end_headers()
+                self.wfile.write(b"No frame yet")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def snapshot_server_thread():
+    server = HTTPServer(("0.0.0.0", SNAPSHOT_PORT), SnapshotHandler)
+    log.info(f"Snapshot server listening on :{SNAPSHOT_PORT}")
+    server.serve_forever()
+
+
+# ==============================================================================
+# Camera + streaming thread
 # ==============================================================================
 
 def camera_thread():
-    global latest_jpeg, motion_active
+    global motion_active, ffmpeg_proc, latest_jpeg
 
     while True:
         try:
+            ffmpeg_proc = start_ffmpeg()
+            time.sleep(1)
+
             if CAMERA_IP:
                 log.info(f"Connecting to OAK-D LR at {CAMERA_IP} via TCP/IP...")
                 device_info = dai.DeviceInfo(CAMERA_IP)
@@ -106,31 +182,29 @@ def camera_thread():
                 device = dai.Device()
 
             with device:
-                log.info(f"Connected to camera: {device.getMxId()}")
+                log.info(f"Connected to camera: {device.getDeviceId()}")
 
-                # Build pipeline using v3 API
                 pipeline = dai.Pipeline(device)
-
-                # Camera node — v3 style: build() attaches to device automatically
                 cam = pipeline.create(dai.node.Camera).build()
-                # Request BGR output at our desired size
                 video_out = cam.requestOutput(
                     (FRAME_WIDTH, FRAME_HEIGHT),
                     type=dai.ImgFrame.Type.BGR888p,
                     fps=FPS
                 )
-
-                # Create output queue directly from the output — no XLinkOut needed in v3
                 q = video_out.createOutputQueue(maxSize=4, blocking=False)
-
-                # Start the pipeline
                 pipeline.start()
-                log.info("Pipeline started — streaming frames...")
+                log.info(f"Pipeline started — RTSP at rtsp://<ha-ip>:{RTSP_PORT}/stream")
+                log.info(f"Snapshot at http://<ha-ip>:{SNAPSHOT_PORT}/snapshot")
 
                 prev_gray = None
                 post_motion_counter = 0
 
                 while pipeline.isRunning():
+                    if ffmpeg_proc.poll() is not None:
+                        log.warning("ffmpeg died — restarting...")
+                        ffmpeg_proc = start_ffmpeg()
+                        time.sleep(1)
+
                     in_frame = q.get()
                     if in_frame is None:
                         continue
@@ -148,7 +222,6 @@ def camera_thread():
 
                     prev_gray = curr_gray
 
-                    # Motion state machine
                     if motion_now:
                         post_motion_counter = POST_MOTION_FRAMES
                         if not motion_active:
@@ -185,76 +258,31 @@ def camera_thread():
                     cv2.putText(display, ts, (FRAME_WIDTH - 310, 34),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
+                    # Update snapshot
                     ok, jpeg_buf = cv2.imencode(
-                        ".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 75]
+                        ".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 70]
                     )
                     if ok:
                         with latest_jpeg_lock:
                             latest_jpeg = jpeg_buf.tobytes()
 
+                    # Push frame to ffmpeg
+                    try:
+                        ffmpeg_proc.stdin.write(display.tobytes())
+                    except (BrokenPipeError, OSError):
+                        log.warning("ffmpeg pipe broken — restarting...")
+                        ffmpeg_proc = start_ffmpeg()
+                        time.sleep(1)
+
         except Exception as e:
             log.error(f"Camera error: {e} — retrying in 10s...")
             motion_active = False
+            if ffmpeg_proc:
+                try:
+                    ffmpeg_proc.terminate()
+                except:
+                    pass
             time.sleep(10)
-
-
-# ==============================================================================
-# MJPEG HTTP server
-# ==============================================================================
-
-BOUNDARY = b"--frame"
-
-class MJPEGHandler(BaseHTTPRequestHandler):
-
-    def log_message(self, format, *args):
-        pass
-
-    def do_GET(self):
-        if self.path == "/stream":
-            self.serve_stream()
-        elif self.path == "/snapshot":
-            self.serve_snapshot()
-        elif self.path == "/health":
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"ok")
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def serve_stream(self):
-        self.send_response(200)
-        self.send_header("Content-Type",
-                         "multipart/x-mixed-replace; boundary=frame")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        try:
-            while True:
-                with latest_jpeg_lock:
-                    frame = latest_jpeg
-                if frame:
-                    self.wfile.write(BOUNDARY + b"\r\n")
-                    self.wfile.write(b"Content-Type: image/jpeg\r\n")
-                    self.wfile.write(f"Content-Length: {len(frame)}\r\n\r\n".encode())
-                    self.wfile.write(frame)
-                    self.wfile.write(b"\r\n")
-                time.sleep(1 / FPS)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-
-    def serve_snapshot(self):
-        with latest_jpeg_lock:
-            frame = latest_jpeg
-        if frame:
-            self.send_response(200)
-            self.send_header("Content-Type", "image/jpeg")
-            self.send_header("Content-Length", str(len(frame)))
-            self.end_headers()
-            self.wfile.write(frame)
-        else:
-            self.send_response(503)
-            self.end_headers()
-            self.wfile.write(b"No frame available yet")
 
 
 # ==============================================================================
@@ -262,13 +290,19 @@ class MJPEGHandler(BaseHTTPRequestHandler):
 # ==============================================================================
 
 if __name__ == "__main__":
-    log.info(f"OAK-D LR bridge starting — MJPEG port {MJPEG_PORT}")
+    log.info(f"OAK-D LR bridge starting")
+    log.info(f"RTSP stream:  rtsp://<ha-ip>:{RTSP_PORT}/stream")
+    log.info(f"Snapshot:     http://<ha-ip>:{SNAPSHOT_PORT}/snapshot")
+
+    snap_thread = threading.Thread(target=snapshot_server_thread, daemon=True)
+    snap_thread.start()
 
     cam_thread = threading.Thread(target=camera_thread, daemon=True)
     cam_thread.start()
 
-    server = HTTPServer(("0.0.0.0", MJPEG_PORT), MJPEGHandler)
-    log.info(f"MJPEG server listening on :{MJPEG_PORT}")
-    log.info(f"  Stream:   http://<ha-ip>:{MJPEG_PORT}/stream")
-    log.info(f"  Snapshot: http://<ha-ip>:{MJPEG_PORT}/snapshot")
-    server.serve_forever()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        if ffmpeg_proc:
+            ffmpeg_proc.terminate()
