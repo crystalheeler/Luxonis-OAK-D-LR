@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.1.3
+- Added sensor.oak_camera_storage entity in Home Assistant
+- Updates every 5 minutes with current storage usage percentage
+- Sensor attributes include used_gb, free_gb, total_gb, recordings folder path,
+  alert threshold and whether alerts are enabled
+- Add it to your dashboard with a Gauge or Entity card
+
+## 2.1.2
+- Fixed pre-roll flickering: reverted to bulk pre-roll write, but record_q
+  is now sized to PRE_ROLL_FRAMES+30 so no live frames are dropped during
+  the brief ~300ms write time
+- Added storage monitoring thread (Thread 7) — checks disk usage every 5 min
+- Sends HA persistent notification and fires oak_camera_storage_alert event
+  when usage exceeds configured threshold
+- New config options: storage_alert_enabled (bool), storage_alert_threshold (0-100)
+- Alert re-fires every 5% increase above threshold, resets when usage drops below
+
+## 2.1.1
+- Fixed jump/skip at 3-4s into recordings: pre-roll frames now written one
+  per loop iteration instead of all at once, eliminating the bulk write stall
+  that caused the record queue to overflow and drop live frames
+- Enlarged record_q to PRE_ROLL_FRAMES+30 to absorb bursts cleanly
+- Fixed "No available devices (1 connected but in use)" on startup by adding
+  a 3-second delay before the first camera connection attempt
+
+## 2.1.0
+- Complete pipeline restructure into 6 independent threads
+- Thread 1: camera capture only — never blocked by downstream processing
+- Thread 2: detection overlay and state machine
+- Thread 3: RTSP publishing to ffmpeg/mediamtx
+- Thread 4: video recording to disk
+- Thread 5: JPEG snapshot updates
+- Thread 6: HTTP snapshot server
+- Each thread has its own queue and drops frames when full instead of blocking
+- Fixes choppy/jumping recordings and unresponsive live stream
+
 ## 2.0.2
 - Removed invalid model slug yolov6n-r4-coco-512x288 (did not exist in Luxonis Hub)
 - Fixed MobileNet SSD slug to correct full form: luxonis/mobilenet-ssd:300x300
@@ -23,6 +59,42 @@
 - Model name included in HA event data
 - Renamed mjpeg_port config key to rtsp_port for clarity
 - Person-only models automatically trigger on any detection regardless of class filters
+
+## 2.1.3
+- Added sensor.oak_camera_storage entity in Home Assistant
+- Updates every 5 minutes with current storage usage percentage
+- Sensor attributes include used_gb, free_gb, total_gb, recordings folder path,
+  alert threshold and whether alerts are enabled
+- Add it to your dashboard with a Gauge or Entity card
+
+## 2.1.2
+- Fixed pre-roll flickering: reverted to bulk pre-roll write, but record_q
+  is now sized to PRE_ROLL_FRAMES+30 so no live frames are dropped during
+  the brief ~300ms write time
+- Added storage monitoring thread (Thread 7) — checks disk usage every 5 min
+- Sends HA persistent notification and fires oak_camera_storage_alert event
+  when usage exceeds configured threshold
+- New config options: storage_alert_enabled (bool), storage_alert_threshold (0-100)
+- Alert re-fires every 5% increase above threshold, resets when usage drops below
+
+## 2.1.1
+- Fixed jump/skip at 3-4s into recordings: pre-roll frames now written one
+  per loop iteration instead of all at once, eliminating the bulk write stall
+  that caused the record queue to overflow and drop live frames
+- Enlarged record_q to PRE_ROLL_FRAMES+30 to absorb bursts cleanly
+- Fixed "No available devices (1 connected but in use)" on startup by adding
+  a 3-second delay before the first camera connection attempt
+
+## 2.1.0
+- Complete pipeline restructure into 6 independent threads
+- Thread 1: camera capture only — never blocked by downstream processing
+- Thread 2: detection overlay and state machine
+- Thread 3: RTSP publishing to ffmpeg/mediamtx
+- Thread 4: video recording to disk
+- Thread 5: JPEG snapshot updates
+- Thread 6: HTTP snapshot server
+- Each thread has its own queue and drops frames when full instead of blocking
+- Fixes choppy/jumping recordings and unresponsive live stream
 
 ## 2.0.2
 - Removed invalid model slug yolov6n-r4-coco-512x288 (did not exist in Luxonis Hub)
