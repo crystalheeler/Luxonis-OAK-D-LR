@@ -27,6 +27,11 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     depthai-nodes \
     --extra-index-url https://artifacts.luxonis.com/artifactory/luxonis-python-snapshot-local/
 
+# Pre-download all supported models into the depthai cache at build time
+# so no internet access is required at runtime
+COPY download_models.py /tmp/download_models.py
+RUN python3 /tmp/download_models.py && rm /tmp/download_models.py
+
 COPY run.sh /
 COPY oak_bridge.py /
 COPY mediamtx.yml /

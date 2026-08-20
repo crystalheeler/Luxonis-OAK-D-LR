@@ -1,6 +1,6 @@
 name: "OAK-D LR Camera"
-description: "Connects to a Luxonis OAK-D LR PoE camera, runs YOLOv6n object detection, serves an RTSP stream, records clips on detection, and fires HA events."
-version: "1.9.0"
+description: "Connects to a Luxonis OAK-D LR PoE camera, runs on-device object detection, serves an RTSP stream, records clips on detection, and fires HA events."
+version: "2.0.2"
 slug: "oak_camera"
 init: false
 host_network: true
@@ -11,6 +11,8 @@ arch:
 options:
   camera_ip: ""
   mjpeg_port: 8765
+  fps: 15
+  detection_model: "yolov6-nano"
   confidence_threshold: 0.5
   detect_people: true
   detect_animals: true
@@ -21,6 +23,8 @@ options:
 schema:
   camera_ip: str
   mjpeg_port: int
+  fps: "int(5,30)"
+  detection_model: "list(yolov6-nano|luxonis/mobilenet-ssd:300x300)"
   confidence_threshold: float
   detect_people: bool
   detect_animals: bool

@@ -1,16 +1,16 @@
 """
-OAK-D LR  →  Home Assistant Bridge (DepthAI v3 + YOLOv6n + mediamtx RTSP)
----------------------------------------------------------------------------
+OAK-D LR  →  Home Assistant Bridge (DepthAI v3 + configurable model + mediamtx RTSP)
+--------------------------------------------------------------------------------------
 - Connects to the OAK-D LR over PoE using DepthAI v3
-- Runs YOLOv6n object detection on-device
+- Runs configurable on-device object detection (YOLOv6n, YOLOv6n-R4, MobileNet SSD)
 - Triggers recording only when configured classes are detected
 - Draws bounding boxes and labels on video feed and recordings
 - Pipes frames into ffmpeg which publishes to mediamtx RTSP server
 - Serves a JPEG snapshot over HTTP for HA dashboard thumbnail
 - Fires events to Home Assistant via REST API when detection starts/stops
 
-RTSP stream:  rtsp://<ha-ip>:8765/stream
-Snapshot:     http://<ha-ip>:8766/snapshot
+RTSP stream:  rtsp://<ha-ip>:<port>/stream
+Snapshot:     http://<ha-ip>:<port+1>/snapshot
 """
 
 import os
@@ -34,10 +34,11 @@ logging.basicConfig(
 log = logging.getLogger("oak-bridge")
 
 # ==============================================================================
-# COCO class definitions
+# Class labels per model
 # ==============================================================================
 
-COCO_CLASSES = [
+# COCO 80 classes (used by YOLOv6 models)
+COCO_80_CLASSES = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
     "truck", "boat", "traffic light", "fire hydrant", "stop sign",
     "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep",
@@ -53,11 +54,34 @@ COCO_CLASSES = [
     "scissors", "teddy bear", "hair drier", "toothbrush"
 ]
 
-PEOPLE_CLASSES   = {"person"}
-ANIMAL_CLASSES   = {"bird", "cat", "dog", "horse", "sheep", "cow",
-                    "elephant", "bear", "zebra", "giraffe"}
-VEHICLE_CLASSES  = {"bicycle", "car", "motorcycle", "airplane", "bus",
-                    "train", "truck", "boat"}
+# PASCAL VOC 20 classes (used by MobileNet SSD)
+MOBILENET_CLASSES = [
+    "background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus",
+    "car", "cat", "chair", "cow", "diningtable", "dog", "horse",
+    "motorbike", "person", "pottedplant", "sheep", "sofa", "train",
+    "tvmonitor"
+]
+
+# Model definitions — name, label list, and friendly display name
+MODELS = {
+    "yolov6-nano": {
+        "display": "YOLOv6 Nano (fastest, 80 classes)",
+        "classes": COCO_80_CLASSES,
+        "people":   {"person"},
+        "animals":  {"bird", "cat", "dog", "horse", "sheep", "cow",
+                     "elephant", "bear", "zebra", "giraffe"},
+        "vehicles": {"bicycle", "car", "motorcycle", "airplane", "bus",
+                     "train", "truck", "boat"},
+    },
+    "luxonis/mobilenet-ssd:300x300": {
+        "display": "MobileNet SSD (lightest, 20 classes)",
+        "classes": MOBILENET_CLASSES,
+        "people":   {"person"},
+        "animals":  {"bird", "cat", "dog", "horse", "cow", "sheep"},
+        "vehicles": {"aeroplane", "bicycle", "boat", "bus", "car",
+                     "motorbike", "train"},
+    },
+}
 
 # Bounding box colors per category (BGR)
 COLORS = {
@@ -67,15 +91,6 @@ COLORS = {
     "other":   (180, 180, 180) # grey
 }
 
-def get_color(label):
-    if label in PEOPLE_CLASSES:
-        return COLORS["person"]
-    if label in ANIMAL_CLASSES:
-        return COLORS["animal"]
-    if label in VEHICLE_CLASSES:
-        return COLORS["vehicle"]
-    return COLORS["other"]
-
 
 # ==============================================================================
 # Config from environment variables
@@ -84,6 +99,8 @@ def get_color(label):
 CAMERA_IP            = os.environ.get("CAMERA_IP", "").strip() or None
 RTSP_PORT            = int(os.environ.get("MJPEG_PORT", 8765))
 SNAPSHOT_PORT        = RTSP_PORT + 1
+FPS                  = int(os.environ.get("FPS", 15))
+DETECTION_MODEL      = os.environ.get("DETECTION_MODEL", "yolov6-nano").strip()
 CONFIDENCE_THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
 DETECT_PEOPLE        = os.environ.get("DETECT_PEOPLE", "true").lower() == "true"
 DETECT_ANIMALS       = os.environ.get("DETECT_ANIMALS", "true").lower() == "true"
@@ -93,29 +110,52 @@ HA_TOKEN             = os.environ.get("HA_TOKEN", "").strip()
 
 FRAME_WIDTH       = 1280
 FRAME_HEIGHT      = 720
-FPS               = 15
 PRE_ROLL_SECONDS  = 3
 POST_ROLL_SECONDS = 5
 MAX_CLIP_SECONDS  = 120
 RECORDINGS_DIR    = "/media/oak_recordings"
 
+# Warn if FPS is high
+if FPS > 20:
+    log.warning(f"FPS set to {FPS} — this may cause 'write queue full' warnings on Pi 4. Consider 15-20 for stability.")
+
 POST_DETECTION_FRAMES = FPS * POST_ROLL_SECONDS
 PRE_ROLL_FRAMES       = FPS * PRE_ROLL_SECONDS
 MAX_CLIP_FRAMES       = FPS * MAX_CLIP_SECONDS
+RTSP_PUBLISH_URL      = f"rtsp://localhost:{RTSP_PORT}/stream"
 
-RTSP_PUBLISH_URL = f"rtsp://localhost:{RTSP_PORT}/stream"
+# Resolve model config
+if DETECTION_MODEL not in MODELS:
+    log.warning(f"Unknown model '{DETECTION_MODEL}' — falling back to yolov6-nano")
+    DETECTION_MODEL = "yolov6-nano"
 
-# Build the set of classes that should trigger recording
+MODEL_CFG = MODELS[DETECTION_MODEL]
+CLASS_LABELS = MODEL_CFG["classes"]
+
+# Build trigger class set
 TRIGGER_CLASSES = set()
 if DETECT_PEOPLE:
-    TRIGGER_CLASSES |= PEOPLE_CLASSES
+    TRIGGER_CLASSES |= MODEL_CFG["people"]
 if DETECT_ANIMALS:
-    TRIGGER_CLASSES |= ANIMAL_CLASSES
+    TRIGGER_CLASSES |= MODEL_CFG["animals"]
 if DETECT_VEHICLES:
-    TRIGGER_CLASSES |= VEHICLE_CLASSES
+    TRIGGER_CLASSES |= MODEL_CFG["vehicles"]
 
+log.info(f"Model: {MODEL_CFG['display']}")
 log.info(f"Trigger classes: {sorted(TRIGGER_CLASSES)}")
 log.info(f"Confidence threshold: {CONFIDENCE_THRESHOLD:.0%}")
+log.info(f"FPS: {FPS}")
+
+
+def get_color(label):
+    if label in MODEL_CFG["people"]:
+        return COLORS["person"]
+    if label in MODEL_CFG["animals"]:
+        return COLORS["animal"]
+    if label in MODEL_CFG["vehicles"]:
+        return COLORS["vehicle"]
+    return COLORS["other"]
+
 
 # ==============================================================================
 # Shared state
@@ -153,21 +193,18 @@ def fire_ha_event(event_type: str, data: dict):
 # ==============================================================================
 
 def draw_detections(frame, detections):
-    """Draw bounding boxes and labels for all detections."""
     triggered_labels = []
     for det in detections:
-        label = COCO_CLASSES[det.label] if det.label < len(COCO_CLASSES) else f"class_{det.label}"
+        label = CLASS_LABELS[det.label] if det.label < len(CLASS_LABELS) else f"class_{det.label}"
         confidence = det.confidence
         color = get_color(label)
 
-        # Scale normalised bbox coords to frame size
         x1 = int(det.xmin * FRAME_WIDTH)
         y1 = int(det.ymin * FRAME_HEIGHT)
         x2 = int(det.xmax * FRAME_WIDTH)
         y2 = int(det.ymax * FRAME_HEIGHT)
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-
         text = f"{label} {confidence:.0%}"
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
         cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
@@ -347,34 +384,32 @@ def camera_thread():
                 log.info(f"Connected to camera: {device.getDeviceId()}")
 
                 pipeline = dai.Pipeline(device)
-
-                # Camera node
                 cam = pipeline.create(dai.node.Camera).build()
 
-                # Detection network — YOLOv6n from model zoo
-                log.info("Loading YOLOv6n model...")
+                log.info(f"Loading model: {DETECTION_MODEL} (from local cache)")
+                model_desc = dai.NNModelDescription(DETECTION_MODEL,
+                                                    platform=device.getPlatformAsString())
+                model_path = dai.getModelFromZoo(model_desc, useCached=True)
+                nn_archive = dai.NNArchive(model_path)
                 det_net = pipeline.create(dai.node.DetectionNetwork).build(
                     cam,
-                    dai.NNModelDescription("yolov6-nano",
-                                           platform=device.getPlatformAsString()),
+                    nn_archive,
                     fps=FPS
                 )
                 det_net.setConfidenceThreshold(CONFIDENCE_THRESHOLD)
 
-                # Request a video output at our display resolution
                 video_out = cam.requestOutput(
                     (FRAME_WIDTH, FRAME_HEIGHT),
                     type=dai.ImgFrame.Type.BGR888p,
                     fps=FPS
                 )
 
-                # Output queues
                 video_q = video_out.createOutputQueue(maxSize=4, blocking=False)
                 det_q   = det_net.out.createOutputQueue(maxSize=4, blocking=False)
 
                 pipeline.start()
-                log.info(f"Pipeline started with YOLOv6n detection")
-                log.info(f"RTSP stream at rtsp://<ha-ip>:{RTSP_PORT}/stream")
+                log.info(f"Pipeline started — model: {MODEL_CFG['display']}, FPS: {FPS}")
+                log.info(f"RTSP at rtsp://<ha-ip>:{RTSP_PORT}/stream")
 
                 post_detection_counter = 0
 
@@ -391,14 +426,12 @@ def camera_thread():
                     frame = in_frame.getCvFrame()
                     display = frame.copy()
 
-                    # Get latest detections (non-blocking)
                     detections = []
                     if det_q.has():
                         det_msg = det_q.get()
                         if det_msg:
                             detections = det_msg.detections
 
-                    # Draw all detections and find which trigger classes are present
                     triggered_labels = draw_detections(display, detections)
                     detection_now = len(triggered_labels) > 0
 
@@ -409,14 +442,14 @@ def camera_thread():
                     else:
                         label_text = "Monitoring"
                         color = (180, 180, 180)
-                    cv2.rectangle(display, (10, 10), (400, 44), (30, 30, 30), -1)
+                    cv2.rectangle(display, (10, 10), (500, 44), (30, 30, 30), -1)
                     cv2.putText(display, label_text, (18, 34),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                     ts = datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
                     cv2.putText(display, ts, (FRAME_WIDTH - 310, 34),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
-                    # ── Detection state machine ───────────────────────────────
+                    # Detection state machine
                     if detection_now:
                         post_detection_counter = POST_DETECTION_FRAMES
                         if not detection_active:
@@ -427,6 +460,7 @@ def camera_thread():
                                 "timestamp": datetime.now().isoformat(),
                                 "camera": "OAK-D LR",
                                 "detected": sorted(set(triggered_labels)),
+                                "model": DETECTION_MODEL,
                             })
                     else:
                         if detection_active:
@@ -440,19 +474,16 @@ def camera_thread():
                                     "camera": "OAK-D LR",
                                 })
 
-                    # Hard cap on clip length
                     if recorder.is_recording() and recorder.is_too_long():
                         log.info("Max clip length reached — saving and starting new clip")
                         recorder.stop()
                         recorder.start(deque())
 
-                    # Write to recorder or pre-roll
                     if recorder.is_recording():
                         recorder.write(display)
                     else:
                         pre_roll.append(display)
 
-                    # Update snapshot
                     ok, jpeg_buf = cv2.imencode(
                         ".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 70]
                     )
@@ -460,7 +491,6 @@ def camera_thread():
                         with latest_jpeg_lock:
                             latest_jpeg = jpeg_buf.tobytes()
 
-                    # Push to ffmpeg for RTSP
                     try:
                         ffmpeg_proc.stdin.write(display.tobytes())
                     except (BrokenPipeError, OSError):

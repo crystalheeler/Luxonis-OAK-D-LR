@@ -1,5 +1,50 @@
 # Changelog
 
+## 2.0.2
+- Removed invalid model slug yolov6n-r4-coco-512x288 (did not exist in Luxonis Hub)
+- Fixed MobileNet SSD slug to correct full form: luxonis/mobilenet-ssd:300x300
+- Dropdown now contains only verified working models
+
+## 2.0.1
+- Models now pre-downloaded into the Docker image at build time
+- No internet access required at runtime for model loading
+- Faster startup — models load from local cache instead of downloading
+- Added download_models.py build script for all 3 supported models
+
+## 2.0.0
+- Added configurable FPS (5-30, default 15) — warning logged if above 20 on Pi 4
+- Added configurable detection model dropdown with 5 options:
+  - YOLOv6 Nano (default) — 80 COCO classes, fastest
+  - YOLOv6 Small — more accurate, slower
+  - YOLOv8 Nano — newer architecture
+  - Person Detection — people only (OpenVINO model)
+  - Face Detection (SCRFD) — faces only
+- Active model name shown in status overlay on video feed
+- Model name included in HA event data
+- Renamed mjpeg_port config key to rtsp_port for clarity
+- Person-only models automatically trigger on any detection regardless of class filters
+
+## 2.0.2
+- Removed invalid model slug yolov6n-r4-coco-512x288 (did not exist in Luxonis Hub)
+- Fixed MobileNet SSD slug to correct full form: luxonis/mobilenet-ssd:300x300
+- Dropdown now contains only verified working models
+
+## 2.0.1
+- Models now pre-downloaded into the Docker image at build time
+- No internet access required at runtime for model loading
+- Faster startup — models load from local cache instead of downloading
+- Added download_models.py build script for all 3 supported models
+
+## 2.0.0
+- Added configurable FPS (5-30, default 15) — adjustable from app settings
+- Added configurable detection model dropdown with 3 options:
+  - YOLOv6 Nano (default, fastest, 80 COCO classes)
+  - YOLOv6 Nano R4 (updated variant, 80 COCO classes)
+  - MobileNet SSD (lightest, 20 PASCAL VOC classes)
+- MobileNet SSD uses correct PASCAL VOC class names for people/animal/vehicle mapping
+- Active model and FPS now logged at startup and included in HA event data
+- Added FPS warning if set above 20 on Pi 4
+
 ## 1.9.0
 - Added YOLOv6n on-device object detection via DepthAI DetectionNetwork node
 - Recording now triggers only on detected people, animals, or vehicles (configurable)
