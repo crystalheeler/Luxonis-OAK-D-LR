@@ -20,10 +20,11 @@ RUN curl -L https://github.com/bluenviron/mediamtx/releases/download/v1.9.0/medi
     | tar -xz -C /usr/local/bin mediamtx \
     && chmod +x /usr/local/bin/mediamtx
 
-# Install depthai and requests
+# Install depthai, depthai-nodes and requests
 RUN pip3 install --no-cache-dir --break-system-packages \
     requests \
     "depthai>=2.24" \
+    depthai-nodes \
     --extra-index-url https://artifacts.luxonis.com/artifactory/luxonis-python-snapshot-local/
 
 COPY run.sh /

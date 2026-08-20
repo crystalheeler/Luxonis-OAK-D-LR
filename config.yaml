@@ -1,6 +1,6 @@
 name: "OAK-D LR Camera"
-description: "Connects to a Luxonis OAK-D LR PoE camera, serves an RTSP stream and snapshot for Home Assistant, and fires motion events."
-version: "1.7.0"
+description: "Connects to a Luxonis OAK-D LR PoE camera, runs YOLOv6n object detection, serves an RTSP stream, records clips on detection, and fires HA events."
+version: "1.9.0"
 slug: "oak_camera"
 init: false
 host_network: true
@@ -11,16 +11,20 @@ arch:
 options:
   camera_ip: ""
   mjpeg_port: 8765
-  motion_threshold: 25
-  min_motion_area: 5000
+  confidence_threshold: 0.5
+  detect_people: true
+  detect_animals: true
+  detect_vehicles: false
   ha_url: "http://homeassistant.local:8123"
   ha_token: ""
 
 schema:
   camera_ip: str
   mjpeg_port: int
-  motion_threshold: int
-  min_motion_area: int
+  confidence_threshold: float
+  detect_people: bool
+  detect_animals: bool
+  detect_vehicles: bool
   ha_url: str
   ha_token: str
 

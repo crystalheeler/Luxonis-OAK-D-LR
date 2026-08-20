@@ -1,11 +1,13 @@
 """
-OAK-D LR  →  Home Assistant Bridge (DepthAI v3 + mediamtx RTSP)
------------------------------------------------------------------
+OAK-D LR  →  Home Assistant Bridge (DepthAI v3 + YOLOv6n + mediamtx RTSP)
+---------------------------------------------------------------------------
 - Connects to the OAK-D LR over PoE using DepthAI v3
-- Detects motion via frame differencing
+- Runs YOLOv6n object detection on-device
+- Triggers recording only when configured classes are detected
+- Draws bounding boxes and labels on video feed and recordings
 - Pipes frames into ffmpeg which publishes to mediamtx RTSP server
 - Serves a JPEG snapshot over HTTP for HA dashboard thumbnail
-- Fires events to Home Assistant via REST API when motion starts/stops
+- Fires events to Home Assistant via REST API when detection starts/stops
 
 RTSP stream:  rtsp://<ha-ip>:8765/stream
 Snapshot:     http://<ha-ip>:8766/snapshot
@@ -22,6 +24,7 @@ import requests
 import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
+from collections import deque
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,30 +34,94 @@ logging.basicConfig(
 log = logging.getLogger("oak-bridge")
 
 # ==============================================================================
+# COCO class definitions
+# ==============================================================================
+
+COCO_CLASSES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+    "truck", "boat", "traffic light", "fire hydrant", "stop sign",
+    "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep",
+    "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+    "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+    "sports ball", "kite", "baseball bat", "baseball glove", "skateboard",
+    "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork",
+    "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+    "couch", "potted plant", "bed", "dining table", "toilet", "tv",
+    "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave",
+    "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+    "scissors", "teddy bear", "hair drier", "toothbrush"
+]
+
+PEOPLE_CLASSES   = {"person"}
+ANIMAL_CLASSES   = {"bird", "cat", "dog", "horse", "sheep", "cow",
+                    "elephant", "bear", "zebra", "giraffe"}
+VEHICLE_CLASSES  = {"bicycle", "car", "motorcycle", "airplane", "bus",
+                    "train", "truck", "boat"}
+
+# Bounding box colors per category (BGR)
+COLORS = {
+    "person":  (0, 200, 0),    # green
+    "animal":  (0, 165, 255),  # orange
+    "vehicle": (255, 100, 0),  # blue
+    "other":   (180, 180, 180) # grey
+}
+
+def get_color(label):
+    if label in PEOPLE_CLASSES:
+        return COLORS["person"]
+    if label in ANIMAL_CLASSES:
+        return COLORS["animal"]
+    if label in VEHICLE_CLASSES:
+        return COLORS["vehicle"]
+    return COLORS["other"]
+
+
+# ==============================================================================
 # Config from environment variables
 # ==============================================================================
 
-CAMERA_IP        = os.environ.get("CAMERA_IP", "").strip() or None
-RTSP_PORT        = int(os.environ.get("MJPEG_PORT", 8765))
-SNAPSHOT_PORT    = RTSP_PORT + 1  # snapshot on next port e.g. 8766
-MOTION_THRESHOLD = int(os.environ.get("MOTION_THRESHOLD", 25))
-MIN_MOTION_AREA  = int(os.environ.get("MIN_MOTION_AREA", 5000))
-HA_URL           = os.environ.get("HA_URL", "http://homeassistant.local:8123").rstrip("/")
-HA_TOKEN         = os.environ.get("HA_TOKEN", "").strip()
+CAMERA_IP            = os.environ.get("CAMERA_IP", "").strip() or None
+RTSP_PORT            = int(os.environ.get("MJPEG_PORT", 8765))
+SNAPSHOT_PORT        = RTSP_PORT + 1
+CONFIDENCE_THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.5))
+DETECT_PEOPLE        = os.environ.get("DETECT_PEOPLE", "true").lower() == "true"
+DETECT_ANIMALS       = os.environ.get("DETECT_ANIMALS", "true").lower() == "true"
+DETECT_VEHICLES      = os.environ.get("DETECT_VEHICLES", "false").lower() == "true"
+HA_URL               = os.environ.get("HA_URL", "http://homeassistant.local:8123").rstrip("/")
+HA_TOKEN             = os.environ.get("HA_TOKEN", "").strip()
 
-# Reduced resolution and FPS to ease load on Raspberry Pi 4
-FRAME_WIDTH  = 1280
-FRAME_HEIGHT = 720
-FPS          = 15
-POST_MOTION_FRAMES = FPS * 4
+FRAME_WIDTH       = 1280
+FRAME_HEIGHT      = 720
+FPS               = 15
+PRE_ROLL_SECONDS  = 3
+POST_ROLL_SECONDS = 5
+MAX_CLIP_SECONDS  = 120
+RECORDINGS_DIR    = "/media/oak_recordings"
+
+POST_DETECTION_FRAMES = FPS * POST_ROLL_SECONDS
+PRE_ROLL_FRAMES       = FPS * PRE_ROLL_SECONDS
+MAX_CLIP_FRAMES       = FPS * MAX_CLIP_SECONDS
 
 RTSP_PUBLISH_URL = f"rtsp://localhost:{RTSP_PORT}/stream"
+
+# Build the set of classes that should trigger recording
+TRIGGER_CLASSES = set()
+if DETECT_PEOPLE:
+    TRIGGER_CLASSES |= PEOPLE_CLASSES
+if DETECT_ANIMALS:
+    TRIGGER_CLASSES |= ANIMAL_CLASSES
+if DETECT_VEHICLES:
+    TRIGGER_CLASSES |= VEHICLE_CLASSES
+
+log.info(f"Trigger classes: {sorted(TRIGGER_CLASSES)}")
+log.info(f"Confidence threshold: {CONFIDENCE_THRESHOLD:.0%}")
 
 # ==============================================================================
 # Shared state
 # ==============================================================================
 
-motion_active    = False
+detection_active = False
 ffmpeg_proc      = None
 latest_jpeg      = None
 latest_jpeg_lock = threading.Lock()
@@ -82,22 +149,99 @@ def fire_ha_event(event_type: str, data: dict):
 
 
 # ==============================================================================
-# Motion detection
+# Draw detections overlay
 # ==============================================================================
 
-def detect_motion(prev_gray, curr_gray):
-    diff = cv2.absdiff(prev_gray, curr_gray)
-    _, thresh = cv2.threshold(diff, MOTION_THRESHOLD, 255, cv2.THRESH_BINARY)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-    thresh = cv2.dilate(thresh, kernel, iterations=2)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    area = sum(cv2.contourArea(c) for c in contours)
-    return area >= MIN_MOTION_AREA, thresh
+def draw_detections(frame, detections):
+    """Draw bounding boxes and labels for all detections."""
+    triggered_labels = []
+    for det in detections:
+        label = COCO_CLASSES[det.label] if det.label < len(COCO_CLASSES) else f"class_{det.label}"
+        confidence = det.confidence
+        color = get_color(label)
+
+        # Scale normalised bbox coords to frame size
+        x1 = int(det.xmin * FRAME_WIDTH)
+        y1 = int(det.ymin * FRAME_HEIGHT)
+        x2 = int(det.xmax * FRAME_WIDTH)
+        y2 = int(det.ymax * FRAME_HEIGHT)
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+        text = f"{label} {confidence:.0%}"
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+        cv2.putText(frame, text, (x1 + 2, y1 - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+
+        if label in TRIGGER_CLASSES:
+            triggered_labels.append(label)
+
+    return triggered_labels
 
 
 # ==============================================================================
-# ffmpeg publisher
+# Video recorder
+# ==============================================================================
+
+class MotionRecorder:
+    def __init__(self):
+        self.writer      = None
+        self.clip_path   = None
+        self.frame_count = 0
+        os.makedirs(RECORDINGS_DIR, exist_ok=True)
+
+    def start(self, pre_roll: deque):
+        try:
+            os.makedirs(RECORDINGS_DIR, exist_ok=True)
+            test_path = os.path.join(RECORDINGS_DIR, ".writetest")
+            with open(test_path, "w") as f:
+                f.write("ok")
+            os.remove(test_path)
+        except Exception as e:
+            log.error(f"Recordings directory not writable: {e} — skipping clip")
+            return
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.clip_path = os.path.join(RECORDINGS_DIR, f"motion_{ts}.mp4")
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        self.writer = cv2.VideoWriter(
+            self.clip_path, fourcc, FPS, (FRAME_WIDTH, FRAME_HEIGHT)
+        )
+        if not self.writer.isOpened():
+            log.error(f"VideoWriter failed to open: {self.clip_path} — skipping clip")
+            self.writer = None
+            self.clip_path = None
+            return
+
+        for f in pre_roll:
+            self.writer.write(f)
+        self.frame_count = len(pre_roll)
+        log.info(f"Recording started: {self.clip_path}")
+
+    def write(self, frame):
+        if self.writer:
+            self.writer.write(frame)
+            self.frame_count += 1
+
+    def stop(self):
+        if self.writer:
+            self.writer.release()
+            self.writer = None
+            duration = self.frame_count / FPS
+            log.info(f"Recording saved: {self.clip_path} ({duration:.1f}s, {self.frame_count} frames)")
+            self.clip_path = None
+            self.frame_count = 0
+
+    def is_recording(self):
+        return self.writer is not None
+
+    def is_too_long(self):
+        return self.frame_count >= MAX_CLIP_FRAMES
+
+
+# ==============================================================================
+# ffmpeg RTSP publisher
 # ==============================================================================
 
 def start_ffmpeg():
@@ -155,16 +299,34 @@ class SnapshotHandler(BaseHTTPRequestHandler):
 
 def snapshot_server_thread():
     server = HTTPServer(("0.0.0.0", SNAPSHOT_PORT), SnapshotHandler)
-    log.info(f"Snapshot server listening on :{SNAPSHOT_PORT}")
+    log.info(f"Snapshot server on :{SNAPSHOT_PORT}")
     server.serve_forever()
 
 
 # ==============================================================================
-# Camera + streaming thread
+# Camera + detection + streaming + recording thread
 # ==============================================================================
 
 def camera_thread():
-    global motion_active, ffmpeg_proc, latest_jpeg
+    global detection_active, ffmpeg_proc, latest_jpeg
+
+    # Wait for /media volume to be ready
+    log.info("Waiting for media volume to be ready...")
+    for _ in range(10):
+        try:
+            os.makedirs(RECORDINGS_DIR, exist_ok=True)
+            test = os.path.join(RECORDINGS_DIR, ".startuptest")
+            open(test, "w").close()
+            os.remove(test)
+            log.info(f"Recordings directory ready: {RECORDINGS_DIR}")
+            break
+        except Exception:
+            time.sleep(1)
+    else:
+        log.warning("Could not verify recordings directory — clips may be lost on first motion")
+
+    recorder = MotionRecorder()
+    pre_roll = deque(maxlen=PRE_ROLL_FRAMES)
 
     while True:
         try:
@@ -185,19 +347,36 @@ def camera_thread():
                 log.info(f"Connected to camera: {device.getDeviceId()}")
 
                 pipeline = dai.Pipeline(device)
+
+                # Camera node
                 cam = pipeline.create(dai.node.Camera).build()
+
+                # Detection network — YOLOv6n from model zoo
+                log.info("Loading YOLOv6n model...")
+                det_net = pipeline.create(dai.node.DetectionNetwork).build(
+                    cam,
+                    dai.NNModelDescription("yolov6-nano",
+                                           platform=device.getPlatformAsString()),
+                    fps=FPS
+                )
+                det_net.setConfidenceThreshold(CONFIDENCE_THRESHOLD)
+
+                # Request a video output at our display resolution
                 video_out = cam.requestOutput(
                     (FRAME_WIDTH, FRAME_HEIGHT),
                     type=dai.ImgFrame.Type.BGR888p,
                     fps=FPS
                 )
-                q = video_out.createOutputQueue(maxSize=4, blocking=False)
-                pipeline.start()
-                log.info(f"Pipeline started — RTSP at rtsp://<ha-ip>:{RTSP_PORT}/stream")
-                log.info(f"Snapshot at http://<ha-ip>:{SNAPSHOT_PORT}/snapshot")
 
-                prev_gray = None
-                post_motion_counter = 0
+                # Output queues
+                video_q = video_out.createOutputQueue(maxSize=4, blocking=False)
+                det_q   = det_net.out.createOutputQueue(maxSize=4, blocking=False)
+
+                pipeline.start()
+                log.info(f"Pipeline started with YOLOv6n detection")
+                log.info(f"RTSP stream at rtsp://<ha-ip>:{RTSP_PORT}/stream")
+
+                post_detection_counter = 0
 
                 while pipeline.isRunning():
                     if ffmpeg_proc.poll() is not None:
@@ -205,58 +384,73 @@ def camera_thread():
                         ffmpeg_proc = start_ffmpeg()
                         time.sleep(1)
 
-                    in_frame = q.get()
+                    in_frame = video_q.get()
                     if in_frame is None:
                         continue
 
                     frame = in_frame.getCvFrame()
-                    curr_gray = cv2.GaussianBlur(
-                        cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (21, 21), 0
-                    )
+                    display = frame.copy()
 
-                    motion_now = False
-                    motion_mask = np.zeros((FRAME_HEIGHT, FRAME_WIDTH), dtype=np.uint8)
+                    # Get latest detections (non-blocking)
+                    detections = []
+                    if det_q.has():
+                        det_msg = det_q.get()
+                        if det_msg:
+                            detections = det_msg.detections
 
-                    if prev_gray is not None:
-                        motion_now, motion_mask = detect_motion(prev_gray, curr_gray)
+                    # Draw all detections and find which trigger classes are present
+                    triggered_labels = draw_detections(display, detections)
+                    detection_now = len(triggered_labels) > 0
 
-                    prev_gray = curr_gray
+                    # Status overlay
+                    if detection_active:
+                        label_text = f"RECORDING — {', '.join(sorted(set(triggered_labels)))}" if triggered_labels else "RECORDING"
+                        color = (0, 0, 220)
+                    else:
+                        label_text = "Monitoring"
+                        color = (180, 180, 180)
+                    cv2.rectangle(display, (10, 10), (400, 44), (30, 30, 30), -1)
+                    cv2.putText(display, label_text, (18, 34),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    ts = datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
+                    cv2.putText(display, ts, (FRAME_WIDTH - 310, 34),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
-                    if motion_now:
-                        post_motion_counter = POST_MOTION_FRAMES
-                        if not motion_active:
-                            motion_active = True
-                            log.info("Motion started")
+                    # ── Detection state machine ───────────────────────────────
+                    if detection_now:
+                        post_detection_counter = POST_DETECTION_FRAMES
+                        if not detection_active:
+                            detection_active = True
+                            log.info(f"Detection started: {', '.join(sorted(set(triggered_labels)))}")
+                            recorder.start(pre_roll)
                             fire_ha_event("oak_camera_motion_started", {
                                 "timestamp": datetime.now().isoformat(),
                                 "camera": "OAK-D LR",
+                                "detected": sorted(set(triggered_labels)),
                             })
                     else:
-                        if motion_active:
-                            post_motion_counter -= 1
-                            if post_motion_counter <= 0:
-                                motion_active = False
-                                log.info("Motion stopped")
+                        if detection_active:
+                            post_detection_counter -= 1
+                            if post_detection_counter <= 0:
+                                detection_active = False
+                                log.info("Detection ended")
+                                recorder.stop()
                                 fire_ha_event("oak_camera_motion_stopped", {
                                     "timestamp": datetime.now().isoformat(),
                                     "camera": "OAK-D LR",
                                 })
 
-                    # Draw overlay
-                    display = frame.copy()
-                    if motion_now:
-                        red = np.zeros_like(display)
-                        red[:, :, 2] = motion_mask
-                        display = cv2.addWeighted(display, 1.0, red, 0.3, 0)
+                    # Hard cap on clip length
+                    if recorder.is_recording() and recorder.is_too_long():
+                        log.info("Max clip length reached — saving and starting new clip")
+                        recorder.stop()
+                        recorder.start(deque())
 
-                    label = "MOTION DETECTED" if motion_active else "Monitoring"
-                    color = (0, 0, 220) if motion_active else (180, 180, 180)
-                    cv2.rectangle(display, (10, 10), (320, 44), (30, 30, 30), -1)
-                    cv2.putText(display, label, (18, 34),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                    ts = datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
-                    cv2.putText(display, ts, (FRAME_WIDTH - 310, 34),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+                    # Write to recorder or pre-roll
+                    if recorder.is_recording():
+                        recorder.write(display)
+                    else:
+                        pre_roll.append(display)
 
                     # Update snapshot
                     ok, jpeg_buf = cv2.imencode(
@@ -266,7 +460,7 @@ def camera_thread():
                         with latest_jpeg_lock:
                             latest_jpeg = jpeg_buf.tobytes()
 
-                    # Push frame to ffmpeg
+                    # Push to ffmpeg for RTSP
                     try:
                         ffmpeg_proc.stdin.write(display.tobytes())
                     except (BrokenPipeError, OSError):
@@ -276,7 +470,9 @@ def camera_thread():
 
         except Exception as e:
             log.error(f"Camera error: {e} — retrying in 10s...")
-            motion_active = False
+            detection_active = False
+            if recorder.is_recording():
+                recorder.stop()
             if ffmpeg_proc:
                 try:
                     ffmpeg_proc.terminate()
@@ -293,6 +489,7 @@ if __name__ == "__main__":
     log.info(f"OAK-D LR bridge starting")
     log.info(f"RTSP stream:  rtsp://<ha-ip>:{RTSP_PORT}/stream")
     log.info(f"Snapshot:     http://<ha-ip>:{SNAPSHOT_PORT}/snapshot")
+    log.info(f"Recordings:   {RECORDINGS_DIR}")
 
     snap_thread = threading.Thread(target=snapshot_server_thread, daemon=True)
     snap_thread.start()

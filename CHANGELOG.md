@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.9.0
+- Added YOLOv6n on-device object detection via DepthAI DetectionNetwork node
+- Recording now triggers only on detected people, animals, or vehicles (configurable)
+- Added bounding box and label overlays on video feed and recordings
+- Color coded boxes: green=person, orange=animal, blue=vehicle
+- New config options: confidence_threshold, detect_people, detect_animals, detect_vehicles
+- Removed motion_threshold and min_motion_area (replaced by AI detection)
+- Detection event now includes list of detected class names in HA event data
+- Added depthai-nodes to Dockerfile
+
+## 1.8.1
+- Fixed missing first recording after startup — added media volume readiness check
+- Added VideoWriter.isOpened() verification to catch silent write failures
+- Added write test before each recording to confirm directory is accessible
+
+## 1.8.0
+- Moved recording out of Home Assistant and into the app itself
+- App now writes MP4 clips directly to /media/oak_recordings/ on motion
+- Added 3-second pre-roll buffer so clips capture what happened before motion
+- Added 5-second post-roll so clips dont cut off abruptly
+- Added 120-second hard cap on clip length with automatic new clip
+- camera.record action no longer needed in HA automation
+
 ## 1.7.0
 - Reduced resolution to 1280x720 and FPS to 15 to ease load on Raspberry Pi 4
 - Increased mediamtx write queue size to handle multiple simultaneous readers
