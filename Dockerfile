@@ -27,10 +27,15 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     depthai-nodes \
     --extra-index-url https://artifacts.luxonis.com/artifactory/luxonis-python-snapshot-local/
 
-# Pre-download all supported models into the depthai cache at build time
-# so no internet access is required at runtime
+# Pre-download Hub models (yolov6-nano, mobilenet-ssd) into depthai cache
 COPY download_models.py /tmp/download_models.py
 RUN python3 /tmp/download_models.py && rm /tmp/download_models.py
+
+# Copy pre-converted YOLO11n NNArchive if it exists in the build context.
+# Generate it on your PC first using prepare_yolo11n_windows.py,
+# then place yolo11n.tar.xz in the oak_camera_app folder before building.
+RUN mkdir -p /models
+COPY yolo11n.tar.xz* /models/
 
 COPY run.sh /
 COPY oak_bridge.py /

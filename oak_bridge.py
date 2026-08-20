@@ -60,6 +60,9 @@ MOBILENET_CLASSES = [
     "tvmonitor"
 ]
 
+# Path to locally converted YOLO11n NNArchive (built into Docker image)
+YOLO11N_LOCAL_PATH = "/models/yolo11n.tar.xz"
+
 MODELS = {
     "yolov6-nano": {
         "display":  "YOLOv6 Nano (fastest, 80 classes)",
@@ -77,6 +80,16 @@ MODELS = {
         "animals":  {"bird", "cat", "dog", "horse", "cow", "sheep"},
         "vehicles": {"aeroplane", "bicycle", "boat", "bus", "car",
                      "motorbike", "train"},
+    },
+    "yolo11n": {
+        "display":  "YOLO11n (accurate, 80 classes, may be slower on RVC2)",
+        "classes":  COCO_80_CLASSES,
+        "people":   {"person"},
+        "animals":  {"bird", "cat", "dog", "horse", "sheep", "cow",
+                     "elephant", "bear", "zebra", "giraffe"},
+        "vehicles": {"bicycle", "car", "motorcycle", "airplane", "bus",
+                     "train", "truck", "boat"},
+        "local_path": YOLO11N_LOCAL_PATH,
     },
 }
 
@@ -123,6 +136,14 @@ if FPS > 20:
 
 if DETECTION_MODEL not in MODELS:
     log.warning(f"Unknown model '{DETECTION_MODEL}' — falling back to yolov6-nano")
+    DETECTION_MODEL = "yolov6-nano"
+
+# Warn if yolo11n selected but file not yet present
+if DETECTION_MODEL == "yolo11n" and not os.path.exists(MODELS["yolo11n"].get("local_path", "")):
+    log.warning("yolo11n selected but /models/yolo11n.tar.xz not found.")
+    log.warning("Run prepare_yolo11n_windows.py on your PC, copy yolo11n.tar.xz")
+    log.warning("to oak_camera_app folder, then rebuild the app.")
+    log.warning("Falling back to yolov6-nano.")
     DETECTION_MODEL = "yolov6-nano"
 
 MODEL_CFG    = MODELS[DETECTION_MODEL]
@@ -363,13 +384,27 @@ def camera_thread():
                 pipeline = dai.Pipeline(device)
                 cam      = pipeline.create(dai.node.Camera).build()
 
-                log.info(f"Loading model: {DETECTION_MODEL}")
-                det_net = pipeline.create(dai.node.DetectionNetwork).build(
-                    cam,
-                    dai.NNModelDescription(DETECTION_MODEL,
-                                           platform=device.getPlatformAsString()),
-                    fps=FPS
-                )
+                # Load from local file if model has a local_path, otherwise from Hub
+                local_path = MODEL_CFG.get("local_path")
+                if local_path:
+                    if not os.path.exists(local_path):
+                        raise FileNotFoundError(
+                            f"Local model not found: {local_path}. "
+                            f"Was the Docker image built correctly?")
+                    log.info(f"Loading model: {DETECTION_MODEL} (local: {local_path})")
+                    nn_archive = dai.NNArchive(local_path)
+                    det_net = pipeline.create(dai.node.DetectionNetwork).build(
+                        cam, nn_archive, fps=FPS
+                    )
+                else:
+                    log.info(f"Loading model: {DETECTION_MODEL} (from Hub cache)")
+                    model_desc = dai.NNModelDescription(
+                        DETECTION_MODEL, platform=device.getPlatformAsString())
+                    model_path = dai.getModelFromZoo(model_desc, useCached=True)
+                    nn_archive = dai.NNArchive(model_path)
+                    det_net = pipeline.create(dai.node.DetectionNetwork).build(
+                        cam, nn_archive, fps=FPS
+                    )
                 det_net.setConfidenceThreshold(CONFIDENCE_THRESHOLD)
 
                 video_out = cam.requestOutput(

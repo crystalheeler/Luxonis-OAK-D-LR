@@ -190,3 +190,24 @@
 - MJPEG HTTP stream on port 8765
 - Motion detection via frame differencing
 - Home Assistant event firing on motion start/stop
+
+## 2.2.1
+- Fixed OOM crash during Docker build on Pi 4
+- Moved YOLO11n conversion off the Pi entirely — run prepare_yolo11n_windows.py
+  on your Windows PC to generate yolo11n.tar.xz, then copy it to the
+  oak_camera_app folder before building
+- Dockerfile now does a simple COPY of the pre-built archive (no PyTorch on Pi)
+- Added graceful fallback to yolov6-nano if yolo11n.tar.xz is not present
+- Removed convert_yolo11n.py (replaced by prepare_yolo11n_windows.py)
+
+## 2.2.0
+- Added YOLO11n to the model dropdown
+- YOLO11n is converted at Docker build time using the Luxonis tools CLI
+  (yolo11n.pt → ONNX with patched detection head → RVC2 NNArchive)
+- Stored locally at /models/yolo11n.tar.xz inside the container
+- No internet access required at runtime for YOLO11n
+- Hub models (yolov6-nano, mobilenet-ssd) still load from depthai cache
+- Local vs Hub loading is handled automatically based on model selection
+- YOLO11n uses COCO 80 classes — same people/animal/vehicle trigger sets as YOLOv6n
+- Note: YOLO11n may run slower than YOLOv6n on RVC2 due to its more
+  complex C3k2 + C2PSA architecture — monitor FPS in logs after switching
