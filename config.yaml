@@ -1,8 +1,9 @@
 name: "OAK-D LR Camera"
 description: "Connects to a Luxonis OAK-D LR PoE camera, serves an MJPEG stream for Home Assistant, and fires motion events."
-version: "1.0.0"
+version: "1.4.0"
 slug: "oak_camera"
 init: false
+host_network: true
 arch:
   - aarch64
   - amd64
@@ -22,12 +23,6 @@ schema:
   min_motion_area: int
   ha_url: str
   ha_token: str
-
-ports:
-  8765/tcp: 8765
-
-ports_description:
-  8765/tcp: "MJPEG camera stream"
 
 map:
   - type: media

@@ -1,11 +1,10 @@
 """
-OAK-D LR  →  Home Assistant Bridge
--------------------------------------
-- Connects to the OAK-D LR over PoE using DepthAI
+OAK-D LR  →  Home Assistant Bridge (DepthAI v3 API)
+-----------------------------------------------------
+- Connects to the OAK-D LR over PoE using DepthAI v3
 - Detects motion via frame differencing
 - Serves an MJPEG HTTP stream on a configurable port
 - Fires events to Home Assistant via REST API when motion starts/stops
-  so HA automations can trigger recordings, notifications, etc.
 """
 
 import os
@@ -40,12 +39,10 @@ HA_TOKEN         = os.environ.get("HA_TOKEN", "").strip()
 FRAME_WIDTH  = 1280
 FRAME_HEIGHT = 800
 FPS          = 20
-
-# How many consecutive quiet frames before we call motion "stopped"
-POST_MOTION_FRAMES = FPS * 4  # 4 seconds
+POST_MOTION_FRAMES = FPS * 4
 
 # ==============================================================================
-# Shared state between the camera thread and the HTTP server
+# Shared state
 # ==============================================================================
 
 latest_jpeg      = None
@@ -58,9 +55,8 @@ motion_active    = False
 # ==============================================================================
 
 def fire_ha_event(event_type: str, data: dict):
-    """Fire a custom event into Home Assistant via the REST API."""
     if not HA_TOKEN:
-        log.warning("No HA token configured — skipping event firing.")
+        log.warning("No HA token configured — skipping event.")
         return
     url = f"{HA_URL}/api/events/{event_type}"
     headers = {
@@ -91,54 +87,50 @@ def detect_motion(prev_gray, curr_gray):
 
 
 # ==============================================================================
-# Camera capture thread
+# Camera thread — DepthAI v3 API
 # ==============================================================================
-
-def build_pipeline():
-    pipeline = dai.Pipeline()
-
-    cam = pipeline.create(dai.node.ColorCamera)
-    cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1200_P)
-    cam.setInterleaved(False)
-    cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-    cam.setFps(FPS)
-
-    manip = pipeline.create(dai.node.ImageManip)
-    manip.initialConfig.setResize(FRAME_WIDTH, FRAME_HEIGHT)
-    manip.initialConfig.setFrameType(dai.ImgFrame.Type.BGR888p)
-    manip.setMaxOutputFrameSize(FRAME_WIDTH * FRAME_HEIGHT * 3)
-
-    xout = pipeline.create(dai.node.XLinkOut)
-    xout.setStreamName("video")
-
-    cam.video.link(manip.inputImage)
-    manip.out.link(xout.input)
-
-    return pipeline
-
 
 def camera_thread():
     global latest_jpeg, motion_active
 
-    log.info("Connecting to OAK-D LR...")
-    pipeline = build_pipeline()
-
     while True:
         try:
             if CAMERA_IP:
+                log.info(f"Connecting to OAK-D LR at {CAMERA_IP} via TCP/IP...")
                 device_info = dai.DeviceInfo(CAMERA_IP)
-                device_ctx = dai.Device(pipeline, device_info)
+                device_info.protocol = dai.XLinkProtocol.X_LINK_TCP_IP
+                device_info.state = dai.XLinkDeviceState.X_LINK_BOOTLOADER
+                device = dai.Device(device_info)
             else:
-                device_ctx = dai.Device(pipeline)
+                log.info("Auto-discovering OAK-D LR on network...")
+                device = dai.Device()
 
-            with device_ctx as device:
+            with device:
                 log.info(f"Connected to camera: {device.getMxId()}")
-                q = device.getOutputQueue(name="video", maxSize=4, blocking=False)
+
+                # Build pipeline using v3 API
+                pipeline = dai.Pipeline(device)
+
+                # Camera node — v3 style: build() attaches to device automatically
+                cam = pipeline.create(dai.node.Camera).build()
+                # Request BGR output at our desired size
+                video_out = cam.requestOutput(
+                    (FRAME_WIDTH, FRAME_HEIGHT),
+                    type=dai.ImgFrame.Type.BGR888p,
+                    fps=FPS
+                )
+
+                # Create output queue directly from the output — no XLinkOut needed in v3
+                q = video_out.createOutputQueue(maxSize=4, blocking=False)
+
+                # Start the pipeline
+                pipeline.start()
+                log.info("Pipeline started — streaming frames...")
 
                 prev_gray = None
                 post_motion_counter = 0
 
-                while True:
+                while pipeline.isRunning():
                     in_frame = q.get()
                     if in_frame is None:
                         continue
@@ -193,7 +185,6 @@ def camera_thread():
                     cv2.putText(display, ts, (FRAME_WIDTH - 310, 34),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
-                    # Encode to JPEG
                     ok, jpeg_buf = cv2.imencode(
                         ".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 75]
                     )
@@ -202,8 +193,9 @@ def camera_thread():
                             latest_jpeg = jpeg_buf.tobytes()
 
         except Exception as e:
-            log.error(f"Camera error: {e} — retrying in 5s...")
-            time.sleep(5)
+            log.error(f"Camera error: {e} — retrying in 10s...")
+            motion_active = False
+            time.sleep(10)
 
 
 # ==============================================================================
@@ -215,7 +207,7 @@ BOUNDARY = b"--frame"
 class MJPEGHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
-        pass  # Suppress per-request access logs
+        pass
 
     def do_GET(self):
         if self.path == "/stream":
