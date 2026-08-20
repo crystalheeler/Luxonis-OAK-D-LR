@@ -37,6 +37,7 @@ RUN python3 /tmp/download_models.py && rm /tmp/download_models.py
 RUN mkdir -p /models
 COPY yolo11n.tar.xz* /models/
 
+COPY settings_page.py /
 COPY run.sh /
 COPY oak_bridge.py /
 COPY mediamtx.yml /

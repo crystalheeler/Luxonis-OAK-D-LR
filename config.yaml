@@ -1,6 +1,6 @@
 name: "OAK-D LR Camera"
-description: "Connects to a Luxonis OAK-D LR PoE camera, runs on-device object detection, serves an RTSP stream, records clips on detection, monitors storage, and fires HA events."
-version: "2.2.1"
+description: "Luxonis OAK-D LR PoE camera with on-device AI detection, RTSP stream, motion recording, and HA events."
+version: "2.4.1"
 slug: "oak_camera"
 init: false
 host_network: true
@@ -8,15 +8,17 @@ arch:
   - aarch64
   - amd64
 
+ingress: true
+ingress_port: 8767
+panel_icon: mdi:camera-iris
+panel_title: OAK Camera
+
 options:
   camera_ip: ""
   mjpeg_port: 8765
   fps: 15
   detection_model: "yolov6-nano"
-  confidence_threshold: 0.5
-  detect_people: true
-  detect_animals: true
-  detect_vehicles: false
+  filename_tag_objects: true
   storage_alert_enabled: true
   storage_alert_threshold: 50
   ha_url: "http://homeassistant.local:8123"
@@ -27,10 +29,7 @@ schema:
   mjpeg_port: int
   fps: "int(5,30)"
   detection_model: "list(yolov6-nano|luxonis/mobilenet-ssd:300x300|yolo11n)"
-  confidence_threshold: float
-  detect_people: bool
-  detect_animals: bool
-  detect_vehicles: bool
+  filename_tag_objects: bool
   storage_alert_enabled: bool
   storage_alert_threshold: "int(0,100)"
   ha_url: str
