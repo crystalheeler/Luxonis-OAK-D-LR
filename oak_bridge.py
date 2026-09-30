@@ -495,6 +495,10 @@ def start_ffmpeg():
            "-framerate", str(FPS), "-i", "pipe:0",
            "-c:v", "libx264", "-preset", "ultrafast",
            "-tune", "zerolatency", "-b:v", "1000k",
+           # One keyframe per second. Without -g, x264 uses one every 250
+           # frames, and a viewer that connects mid-stream cannot draw a
+           # picture until the next keyframe: AnyCam measured 19-28 s.
+           "-g", str(FPS),
            "-f", "rtsp", "-rtsp_transport", "tcp", RTSP_PUBLISH_URL]
     log.info(f"Starting ffmpeg → {RTSP_PUBLISH_URL}")
     return subprocess.Popen(cmd, stdin=subprocess.PIPE,

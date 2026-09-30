@@ -1,5 +1,13 @@
 # OAK-D LR Camera — Changelog
 
+## 2.4.2
+- RTSP stream now sends one keyframe per second (`-g` set to the FPS
+  option). x264's default is one keyframe every 250 frames, and a viewer
+  cannot draw a picture until the first keyframe arrives. AnyCam measured
+  19 to 28 s before the first frame on every new connection to this stream
+  (2026-09-29); it should now be about 1 s. The fixed 1000k bitrate spends
+  a little more on keyframes, so the picture may be slightly softer
+
 ## 2.4.1
 - Fixed filename tag min duration not saving when set to 0: JS falsy evaluation
   caused parseFloat('0') || 2.0 to return 2.0 instead of 0; fixed with explicit

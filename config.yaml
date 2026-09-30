@@ -1,6 +1,6 @@
 name: "OAK-D LR Camera"
 description: "Luxonis OAK-D LR PoE camera with on-device AI detection, RTSP stream, motion recording, and HA events."
-version: "2.4.1"
+version: "2.4.2"
 slug: "oak_camera"
 init: false
 host_network: true
