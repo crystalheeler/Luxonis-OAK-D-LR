@@ -75,6 +75,8 @@ body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-ser
 .btn-save{background:#3b82f6;color:#fff;padding:6px 16px}
 .btn-reset{background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 10px}.btn-download{background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 10px}
 .btn-reload{background:var(--border);color:var(--muted);padding:6px 10px}
+.btn-stop{background:transparent;border:1px solid #7f1d1d;color:#f87171;padding:6px 10px}
+.btn-stop:hover{background:#7f1d1d;color:#fff;opacity:1}
 #status{display:none;padding:7px 16px;font-family:'IBM Plex Mono',monospace;font-size:11px;border-bottom:1px solid var(--border)}
 #status.ok{background:#052e16;color:#4ade80}
 #status.err{background:#2d0a0a;color:#f87171}
@@ -130,6 +132,8 @@ body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-ser
     <button class="btn btn-reset"    onclick="resetSettings()">Reset defaults</button>
     <button class="btn btn-download" onclick="exportSettings()">&#x2913; Save to file</button>
     <button class="btn btn-save"     onclick="saveSettings()">Save &amp; Apply</button>
+    <button class="btn btn-stop"     onclick="shutdownApp()"
+            title="Stop the program. Standalone builds must then be started again by hand.">&#x23FB; Shut down</button>
   </div>
 </div>
 <div id="status"></div>
@@ -325,6 +329,18 @@ async function resetSettings(){
     await loadSettings();
     showStatus('\u2713 Reset to defaults.',true);
   }catch(e){ showStatus('Reset failed: '+e.message,false); }
+}
+async function shutdownApp(){
+  if(!confirm('Stop the OAK camera program?'+String.fromCharCode(10,10)+
+              'The stream, recording and detection all stop.'+String.fromCharCode(10)+
+              'A standalone build must then be started again by hand.')) return;
+  try{
+    await fetch('api/shutdown',{method:'POST'});
+    showStatus('\u23FB Shutting down. This page will stop responding.',true);
+  }catch(e){
+    // A closed connection is the expected result, because the server exits.
+    showStatus('\u23FB Shutting down.',true);
+  }
 }
 // Point stream directly at port 8767, bypassing the ingress proxy
 // which buffers multipart/x-mixed-replace and prevents live streaming

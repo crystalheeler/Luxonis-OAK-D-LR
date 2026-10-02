@@ -1,7 +1,17 @@
+# Home Assistant add-on manifest.
+#
+# This add-on installs a prebuilt image instead of building from a Dockerfile.
+# An add-on builds with its own folder as the Docker context, so a Dockerfile
+# placed here could not COPY the Python source from the repository root. The
+# release workflow builds one multi-architecture image and pushes it to GHCR,
+# which also removes the local build on the user's Raspberry Pi.
 name: "OAK-D LR Camera"
 description: "Luxonis OAK-D LR PoE camera with on-device AI detection, RTSP stream, motion recording, and HA events."
-version: "2.4.2"
+version: "2.5.0"
 slug: "oak_camera"
+url: "https://github.com/crystalheeler/Luxonis-OAK-D-LR"
+image: "ghcr.io/crystalheeler/luxonis-oak-d-lr"
+
 init: false
 host_network: true
 arch:
@@ -21,6 +31,7 @@ options:
   filename_tag_objects: true
   storage_alert_enabled: true
   storage_alert_threshold: 50
+  models_dir: "/media/oak_models"
   ha_url: "http://homeassistant.local:8123"
   ha_token: ""
 
@@ -32,6 +43,7 @@ schema:
   filename_tag_objects: bool
   storage_alert_enabled: bool
   storage_alert_threshold: "int(0,100)"
+  models_dir: str
   ha_url: str
   ha_token: str
 
@@ -40,4 +52,3 @@ map:
     read_only: false
 
 homeassistant_api: true
-changelog: CHANGELOG.md

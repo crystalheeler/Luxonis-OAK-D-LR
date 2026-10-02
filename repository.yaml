@@ -1,0 +1,5 @@
+# Marks this repository as a Home Assistant add-on repository.
+# Users add it from Settings > Add-ons > Add-on Store > Repositories.
+name: Luxonis OAK-D LR
+url: https://github.com/crystalheeler/Luxonis-OAK-D-LR
+maintainer: crystalheeler <crystalheeler@keemail.me>

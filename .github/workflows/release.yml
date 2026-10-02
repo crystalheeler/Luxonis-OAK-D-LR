@@ -1,0 +1,270 @@
+name: Release
+
+# One tag push produces every artifact a user needs:
+#   - OakCamera-<version>-win64.zip  attached to the GitHub Release
+#   - ghcr.io/<owner>/luxonis-oak-d-lr:<version>  for the Home Assistant add-on
+#
+# Tag a release with:
+#   git tag v2.5.0 && git push origin v2.5.0
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, without the leading v (for a test run)"
+        required: true
+
+permissions:
+  contents: write     # create the Release and upload assets
+  packages: write     # push the image to GHCR
+
+env:
+  MEDIAMTX_VERSION: "1.9.0"
+  IMAGE_NAME: luxonis-oak-d-lr
+
+jobs:
+  # ---------------------------------------------------------------------------
+  check:
+    name: Check version consistency
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building version ${VERSION}"
+
+      - name: Add-on version must match the tag
+        run: |
+          ADDON_VERSION=$(grep -oP '^version:\s*"\K[^"]+' addon/oak_camera/config.yaml)
+          if [ "${ADDON_VERSION}" != "${{ steps.v.outputs.version }}" ]; then
+            echo "::error::addon/oak_camera/config.yaml says ${ADDON_VERSION}, the tag says ${{ steps.v.outputs.version }}"
+            exit 1
+          fi
+          echo "Add-on version ${ADDON_VERSION} matches the tag."
+
+      - name: Add-on changelog must match the root changelog
+        run: |
+          if ! diff -q CHANGELOG.md addon/oak_camera/CHANGELOG.md >/dev/null; then
+            echo "::error::addon/oak_camera/CHANGELOG.md has drifted. Run: cp CHANGELOG.md addon/oak_camera/CHANGELOG.md"
+            exit 1
+          fi
+          echo "Changelogs match."
+
+      - name: Python files must compile
+        run: python -m compileall -q src tools
+
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Build the portable Windows executable
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r windows/requirements-windows.txt \
+            --extra-index-url https://artifacts.luxonis.com/artifactory/luxonis-python-snapshot-local/
+
+      - name: Download mediamtx and ffmpeg
+        shell: bash
+        run: |
+          mkdir -p windows/bin
+          curl -fsSL -o /tmp/mediamtx.zip \
+            "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/mediamtx_v${MEDIAMTX_VERSION}_windows_amd64.zip"
+          unzip -o -j /tmp/mediamtx.zip mediamtx.exe -d windows/bin
+
+          # An LGPL build keeps redistribution simple.
+          curl -fsSL -o /tmp/ffmpeg.zip \
+            "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip"
+          unzip -o -j /tmp/ffmpeg.zip "*/bin/ffmpeg.exe" -d windows/bin
+
+          ls -la windows/bin
+
+      - name: Write the executable version resource
+        shell: bash
+        run: |
+          V="${{ needs.check.outputs.version }}"
+          IFS=. read -r MAJ MIN PAT <<< "$V"
+          cat > windows/version_info.txt <<EOF
+          VSVersionInfo(
+            ffi=FixedFileInfo(filevers=($MAJ, $MIN, $PAT, 0), prodvers=($MAJ, $MIN, $PAT, 0)),
+            kids=[
+              StringFileInfo([StringTable('040904B0', [
+                StringStruct('FileDescription', 'OAK-D LR Camera bridge'),
+                StringStruct('FileVersion', '$V'),
+                StringStruct('InternalName', 'OakCamera'),
+                StringStruct('OriginalFilename', 'OakCamera.exe'),
+                StringStruct('ProductName', 'Luxonis OAK-D LR Camera'),
+                StringStruct('ProductVersion', '$V'),
+              ])]),
+              VarFileInfo([VarStruct('Translation', [1033, 1200])])
+            ]
+          )
+          EOF
+
+      - name: Build
+        run: pyinstaller --clean --noconfirm windows/oak_camera.spec
+
+      - name: Smoke test the executable
+        shell: bash
+        run: |
+          # The program is a long running service, so a plain run never exits.
+          # Confirm instead that it starts, writes its log and reports its paths.
+          mkdir -p smoke
+          cp dist/OakCamera.exe smoke/
+          cp windows/oak_config.yaml smoke/
+          ( cd smoke && ./OakCamera.exe & )
+          sleep 75
+
+          # Stop it first, so a failed check below still leaves a clean runner.
+          taskkill //IM OakCamera.exe //F || true
+          taskkill //IM mediamtx.exe //F || true
+
+          LOG=smoke/data/oak_camera.log
+          if [ ! -f "$LOG" ]; then
+            echo "::error::OakCamera.exe produced no log file"
+            ls -R smoke || true
+            exit 1
+          fi
+          echo "--- log ---"
+          cat "$LOG"
+
+          grep -q "Deployment mode: portable" "$LOG" \
+            || { echo "::error::the log does not report portable mode"; exit 1; }
+          grep -q "Logging to" "$LOG" \
+            || { echo "::error::logging did not initialise"; exit 1; }
+          grep -q "Staged mediamtx.exe" "$LOG" \
+            || { echo "::error::mediamtx.exe was not staged to the bin folder"; exit 1; }
+          # A missing camera is expected on a build runner. A crash is not.
+          if grep -qiE "Traceback|ModuleNotFoundError|ImportError" "$LOG"; then
+            echo "::error::the executable raised an unhandled exception"
+            exit 1
+          fi
+          echo "Smoke test passed." 
+
+      - name: Package
+        shell: bash
+        run: |
+          V="${{ needs.check.outputs.version }}"
+          STAGE="OakCamera-${V}-win64"
+          mkdir -p "$STAGE"
+          cp dist/OakCamera.exe       "$STAGE/"
+          cp windows/oak_config.yaml  "$STAGE/"
+          cp windows/README-windows.md "$STAGE/README.txt"
+          cd "$STAGE" && 7z a -tzip "../${STAGE}.zip" . && cd ..
+          ls -la *.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: OakCamera-*-win64.zip
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  image:
+    name: Build and push the add-on image
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase the owner for the image name
+        id: owner
+        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false     # the Supervisor reads a plain manifest list
+          tags: |
+            ghcr.io/${{ steps.owner.outputs.name }}/${{ env.IMAGE_NAME }}:${{ needs.check.outputs.version }}
+            ghcr.io/${{ steps.owner.outputs.name }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish the GitHub Release
+    needs: [check, windows, image]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+
+      - name: Extract the changelog section for this version
+        run: |
+          V="${{ needs.check.outputs.version }}"
+          # Take the lines between this version heading and the next one.
+          awk -v ver="$V" '
+            $0 ~ "^## +\\[?" ver "\\]?" { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "No changelog section found for ${V}." > notes.md
+          fi
+          OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          REPO_ENC=$(printf '%s' "${GITHUB_REPOSITORY}" | sed 's|/|%2F|g')
+          cat >> notes.md <<EOF
+
+          ---
+
+          ## Install
+
+          **Windows, portable.** Download \`OakCamera-${V}-win64.zip\` below, unzip it
+          anywhere, and run \`OakCamera.exe\`. No installer and no administrator
+          rights. Settings live in \`oak_config.yaml\` beside the executable.
+
+          **Home Assistant.** Add this repository in Settings > Add-ons >
+          Add-on Store > Repositories, then install **OAK-D LR Camera**:
+
+          [![Add repository to Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2F${REPO_ENC})
+
+          **Container.** \`ghcr.io/${OWNER}/luxonis-oak-d-lr:${V}\`
+          EOF
+          cat notes.md
+
+      - name: Create the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "v${{ needs.check.outputs.version }}"
+          body_path: notes.md
+          files: OakCamera-*-win64.zip
+          draft: false
+          prerelease: false

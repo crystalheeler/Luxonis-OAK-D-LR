@@ -1,0 +1,17 @@
+# Normalise to LF in the repository.
+* text=auto eol=lf
+
+# These must keep LF in the working tree as well. A CRLF line ending breaks a
+# shell line continuation inside the Docker build and inside a workflow step.
+Dockerfile      text eol=lf
+docker/*        text eol=lf
+*.sh            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.py            text eol=lf
+
+# Binary.
+*.ico           binary
+*.png           binary
+*.tar.xz        binary
+*.zip           binary

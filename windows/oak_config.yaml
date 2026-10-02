@@ -1,0 +1,37 @@
+# OAK-D LR Camera — portable configuration
+# =========================================
+# Edit this file, then restart the program. Every value here matches an option
+# in the Home Assistant add-on, so the two deployments stay in step.
+
+# IP address of the OAK-D LR PoE camera. Leave empty to search for a USB device.
+camera_ip: ""
+
+# RTSP port. The snapshot server uses this port plus one, and the settings page
+# always uses 8767.
+mjpeg_port: 8765
+
+# Frames per second, 5 to 30.
+fps: 15
+
+# yolov6-nano | luxonis/mobilenet-ssd:300x300 | yolo11n
+# yolo11n needs yolo11n.tar.xz in the models folder. Generate it with
+# tools/prepare_yolo11n_windows.py.
+detection_model: "yolov6-nano"
+
+# Add the detected object names to each recording filename.
+filename_tag_objects: true
+
+# Warn when the recordings drive passes this percentage.
+storage_alert_enabled: true
+storage_alert_threshold: 50
+
+# Home Assistant integration. Leave ha_token empty to turn it off: the program
+# then runs standalone and sends no events, notifications or sensor updates.
+ha_url: "http://homeassistant.local:8123"
+ha_token: ""
+
+# Folder overrides. Leave them commented out to keep everything beside the
+# executable, which lets the whole folder travel on a USB stick.
+# recordings_dir: "D:/OakRecordings"
+# data_dir: "D:/OakCamera/data"
+# models_dir: "D:/OakCamera/models"

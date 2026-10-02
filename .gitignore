@@ -1,5 +1,22 @@
-# YOLO11n model archive — generate locally using prepare_yolo11n.bat
+# YOLO11n model archive — generate with tools/prepare_yolo11n_windows.py
 yolo11n.tar.xz
+
+# Windows build artifacts
+build/
+dist/
+windows/bin/
+windows/version_info.txt
+*.spec.bak
+
+# Runtime folders created beside the executable or in a source run
+src/data/
+src/logs/
+src/models/
+src/recordings/
+src/bin/
+oak_camera.log*
+oak_settings.json
+mediamtx.yml
 
 # macOS
 .DS_Store
@@ -8,6 +25,7 @@ yolo11n.tar.xz
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
 
 # HA add-on build artifacts
 *.zip

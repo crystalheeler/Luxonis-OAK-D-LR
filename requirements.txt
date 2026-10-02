@@ -1,0 +1,10 @@
+# Shared runtime dependencies for the add-on image and the portable build.
+# depthai v3 comes from the Luxonis snapshot index, not from PyPI, so every
+# install needs:
+#   --extra-index-url https://artifacts.luxonis.com/artifactory/luxonis-python-snapshot-local/
+depthai>=2.24
+depthai-nodes
+opencv-python-headless>=4.9
+numpy>=1.24
+requests>=2.31
+PyYAML>=6.0

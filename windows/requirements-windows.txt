@@ -1,0 +1,10 @@
+# Extra packages the portable Windows build needs on top of requirements.txt.
+-r ../requirements.txt
+
+# System tray icon. Without these the launcher still runs, and the settings
+# page is then the only way to stop the program.
+pystray>=0.19
+Pillow>=10.0
+
+# Build tool.
+pyinstaller>=6.3

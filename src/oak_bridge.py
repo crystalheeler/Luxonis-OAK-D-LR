@@ -17,10 +17,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from datetime import datetime
 from collections import deque
 import settings_page as _settings_page
+import oak_paths
+import oak_logging
+import oak_runtime
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s [%(levelname)s] %(message)s",
-                    datefmt="%H:%M:%S")
+# The launcher configures logging before it imports this module. A direct run of
+# this file configures it here instead, so the log always reaches a file.
+if not logging.getLogger().handlers:
+    oak_logging.setup_logging()
 log = logging.getLogger("oak-bridge")
 
 # ==============================================================================
@@ -86,8 +90,9 @@ CATEGORY_COLORS = {
     "other":       (180, 180, 180),
 }
 
-# Model definitions
-YOLO11N_LOCAL_PATH = "/models/yolo11n.tar.xz"
+# Model definitions. The archive lives in the resolved models folder: /models
+# in the add-on, or a models folder beside the executable when portable.
+YOLO11N_LOCAL_PATH = os.path.join(oak_paths.models_dir(), "yolo11n.tar.xz")
 
 MODELS = {
     "yolov6-nano": {
@@ -172,7 +177,8 @@ if DETECTION_MODEL not in MODELS:
     DETECTION_MODEL = "yolov6-nano"
 
 if DETECTION_MODEL == "yolo11n" and not os.path.exists(MODELS["yolo11n"].get("local_path","")):
-    log.warning("yolo11n selected but /models/yolo11n.tar.xz not found — falling back to yolov6-nano")
+    log.warning(f"yolo11n selected but {YOLO11N_LOCAL_PATH} not found "
+                f"— falling back to yolov6-nano")
     DETECTION_MODEL = "yolov6-nano"
 
 MODEL_CFG    = MODELS[DETECTION_MODEL]
@@ -185,7 +191,7 @@ FRAME_HEIGHT          = 720
 PRE_ROLL_SECONDS      = 3
 POST_ROLL_SECONDS     = 5
 MAX_CLIP_SECONDS      = 120
-RECORDINGS_DIR        = "/media/oak_recordings"
+RECORDINGS_DIR        = oak_paths.recordings_dir()
 STORAGE_CHECK_INTERVAL= 300
 MAX_FILENAME_OBJECTS  = 10
 
@@ -220,8 +226,53 @@ latest_jpeg_lock = threading.Lock()
 frame_event      = threading.Event()   # fires each time a new JPEG is ready
 ffmpeg_proc      = None
 
+# Set once when the program must stop. Every loop that can block checks it, so
+# a tray Quit, a settings panel Shutdown and Ctrl-C all end the process.
+shutdown_event   = threading.Event()
+
+# The launcher owns mediamtx, so it registers a stopper here. shutdown_children
+# then stops every child the program started, whoever started it.
+_cleanup_hooks: list = []
+
+
+def register_cleanup(func) -> None:
+    """Add a callable that shutdown_children must run. The launcher uses this."""
+    _cleanup_hooks.append(func)
+
+
+def shutdown_children() -> None:
+    """Stop ffmpeg and every registered child process. Safe to call twice."""
+    global ffmpeg_proc
+    if ffmpeg_proc is not None:
+        try:
+            ffmpeg_proc.terminate()
+            ffmpeg_proc.wait(timeout=5)
+        except Exception:
+            try:    ffmpeg_proc.kill()
+            except Exception: pass
+        ffmpeg_proc = None
+
+    for hook in _cleanup_hooks:
+        try:
+            hook()
+        except Exception as e:
+            log.error(f"Cleanup hook failed: {e}")
+
+
+def request_shutdown() -> None:
+    """Stop the program. Called by the tray, the settings panel and signals."""
+    if shutdown_event.is_set():
+        return
+    log.info("Shutting down")
+    shutdown_event.set()
+    shutdown_children()
+    logging.shutdown()
+    # The worker threads are daemons and some block on the camera, so a plain
+    # return would hang. Exit the interpreter directly.
+    os._exit(0)
+
 # Settings persistence
-SETTINGS_PATH  = "/data/oak_settings.json"
+SETTINGS_PATH  = os.path.join(oak_paths.data_dir(), "oak_settings.json")
 settings_lock  = threading.Lock()
 _SETTINGS_HTML = _settings_page.build_settings_html()
 
@@ -489,7 +540,16 @@ class MotionRecorder:
 # ==============================================================================
 
 def start_ffmpeg():
-    cmd = ["ffmpeg", "-loglevel", "warning",
+    """Start the RTSP publisher. Return None when ffmpeg is not installed.
+
+    The portable build may ship without ffmpeg to keep the download small. The
+    caller treats None as no RTSP and leaves the other outputs running.
+    """
+    exe = oak_runtime.resolve_binary("ffmpeg")
+    if exe is None:
+        return None
+
+    cmd = [exe, "-loglevel", "warning",
            "-f", "rawvideo", "-pixel_format", "bgr24",
            "-video_size", f"{FRAME_WIDTH}x{FRAME_HEIGHT}",
            "-framerate", str(FPS), "-i", "pipe:0",
@@ -501,8 +561,11 @@ def start_ffmpeg():
            "-g", str(FPS),
            "-f", "rtsp", "-rtsp_transport", "tcp", RTSP_PUBLISH_URL]
     log.info(f"Starting ffmpeg → {RTSP_PUBLISH_URL}")
-    return subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    # Without a console, ffmpeg errors vanish. Copy them into the log file.
+    oak_logging.drain_pipe(proc.stderr, "ffmpeg", logging.WARNING)
+    return proc
 
 # ==============================================================================
 # Thread 1 — Camera capture
@@ -698,6 +761,14 @@ def detection_thread():
 def rtsp_thread():
     global ffmpeg_proc
     ffmpeg_proc = start_ffmpeg()
+    if ffmpeg_proc is None:
+        log.warning("ffmpeg not found — RTSP stream disabled. "
+                    "The MJPEG feed, snapshots and recording still run.")
+        # Drain the queue so the detection thread never blocks on a full queue.
+        while not shutdown_event.is_set():
+            try:    rtsp_q.get(timeout=5)
+            except queue.Empty: continue
+        return
     time.sleep(2)
 
     while True:
@@ -926,9 +997,16 @@ class IngressHandler(BaseHTTPRequestHandler):
         elif path == "/api/restart":
             self._send(200, "application/json", b'{"ok":true}')
             log.info("Restart requested via settings panel")
-            # Restart the entire process — S6 supervisor will bring it back up
-            import os, signal
-            os.kill(os.getpid(), signal.SIGTERM)
+            # Hand over to a fresh process. This works with no service manager,
+            # so the add-on, the portable build and a source run all restart.
+            threading.Thread(target=oak_runtime.restart_process,
+                             args=(shutdown_children,),
+                             name="restart", daemon=False).start()
+        elif path == "/api/shutdown":
+            self._send(200, "application/json", b'{"ok":true}')
+            log.info("Shutdown requested via settings panel")
+            threading.Thread(target=request_shutdown,
+                             name="shutdown", daemon=False).start()
         else:
             self._send(404, "text/plain", b"Not found")
 
@@ -998,11 +1076,22 @@ def storage_thread():
 # Main
 # ==============================================================================
 
-if __name__ == "__main__":
+def main() -> None:
+    """Start every worker thread and block until shutdown is requested."""
     log.info("OAK-D LR bridge starting (threaded pipeline)")
-    log.info(f"RTSP stream:  rtsp://<ha-ip>:{RTSP_PORT}/stream")
-    log.info(f"Snapshot:     http://<ha-ip>:{SNAPSHOT_PORT}/snapshot")
+    log.info(f"RTSP stream:  rtsp://<host>:{RTSP_PORT}/stream")
+    log.info(f"Snapshot:     http://<host>:{SNAPSHOT_PORT}/snapshot")
+    log.info(f"Settings:     http://<host>:{INGRESS_PORT}/")
     log.info(f"Recordings:   {RECORDINGS_DIR}")
+
+    # SIGINT covers Ctrl-C in a console. SIGTERM covers docker stop and the
+    # Home Assistant Supervisor stopping the add-on.
+    import signal
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, lambda *_: request_shutdown())
+        except (ValueError, OSError, AttributeError):
+            pass    # not the main thread, or the platform lacks the signal
 
     threads = [
         threading.Thread(target=camera_thread,    name="camera",    daemon=True),
@@ -1016,9 +1105,15 @@ if __name__ == "__main__":
     ]
     for t in threads:
         t.start()
+
+    # Block here until the tray, the settings panel or a signal asks to stop.
     try:
-        while True:
-            time.sleep(1)
+        while not shutdown_event.wait(timeout=1.0):
+            pass
     except KeyboardInterrupt:
-        if ffmpeg_proc:
-            ffmpeg_proc.terminate()
+        pass
+    request_shutdown()
+
+
+if __name__ == "__main__":
+    main()
