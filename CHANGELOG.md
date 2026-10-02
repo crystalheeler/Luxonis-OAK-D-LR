@@ -1,5 +1,62 @@
 # OAK-D LR Camera — Changelog
 
+## 2.5.0
+Runs standalone on Windows and Linux as well as a Home Assistant add-on. One
+source tree now serves three deployments.
+
+### New: portable Windows build
+- `OakCamera.exe` is one file. Unzip it anywhere and double-click it. No
+  installer and no administrator rights
+- A tray icon holds Open settings, View log, Open data folder, Open recordings
+  folder, Start with Windows, Restart and Quit. It is the only way to quit a
+  windowed build, because there is no console and no Ctrl-C
+- Child binaries are copied to a fixed `bin` folder on first run. A onefile
+  bundle unpacks to a new temporary path on every launch, and Windows Firewall
+  keys its rules on the binary path, so without this the user would answer a
+  firewall prompt on every launch
+- A second copy cannot start. The first holds port 8764, so two processes never
+  fight over ports 8765 to 8767 or over the camera
+
+### New: logging to a file
+- Rotating log at `oak_camera.log`, 2 MB per file and 5 files kept
+- mediamtx output and ffmpeg errors now reach the log. Both previously went to
+  stdout or to `DEVNULL`, so an RTSP failure left no trace
+- A shim replaces `sys.stdout` and `sys.stderr` when PyInstaller sets them to
+  `None` in a windowed build. A bare `print()` would otherwise raise
+  `AttributeError` on `None.write`
+
+### Changed: one launcher replaces run.sh
+- `run.sh` read its settings through bashio, so it only ran inside the
+  Supervisor. `oak_launcher.py` reads `/data/options.json` directly, which is
+  the same file bashio read, then falls back to `oak_config.yaml` beside the
+  executable. The add-on interface is unchanged
+- The add-on now installs a prebuilt multi-architecture image from GHCR instead
+  of building on the user's Raspberry Pi
+- Dropped the unused `DETECT_*` and `CONFIDENCE_*` environment variables. The
+  settings panel has been the only source of per-object thresholds since 2.3.0
+- Every writable folder resolves per platform, with an environment override. A
+  portable build that cannot write beside its executable falls back to
+  `%LOCALAPPDATA%\OakCamera`
+
+### Fixed
+- The RTSP stream broke at any `mjpeg_port` other than 8765. `mediamtx.yml`
+  hardcoded `rtspAddress: :8765` while ffmpeg published to the configured port,
+  so the two no longer met. The launcher now generates the config from the
+  configured port
+- The Restart button sent `SIGTERM` to the process and relied on the S6
+  supervisor to bring it back. Windows has no `SIGTERM` and a portable build has
+  no supervisor, so Restart would have stopped the program for good. It now
+  re-executes itself, which works on all three deployments
+
+### Other
+- ffmpeg is optional. Without it the RTSP thread logs a warning and exits, and
+  the MJPEG feed, snapshots and recording keep running. This keeps the portable
+  download roughly 150 MB smaller
+- The settings page gains a Shut down button, for a portable Linux run with no
+  tray icon
+- One tag push now builds the Windows ZIP, pushes the add-on image and publishes
+  a GitHub Release carrying both
+
 ## 2.4.2
 - RTSP stream now sends one keyframe per second (`-g` set to the FPS
   option). x264's default is one keyframe every 250 frames, and a viewer

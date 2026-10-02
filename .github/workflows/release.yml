@@ -47,7 +47,8 @@ jobs:
 
       - name: Add-on version must match the tag
         run: |
-          ADDON_VERSION=$(grep -oP '^version:\s*"\K[^"]+' addon/oak_camera/config.yaml)
+          # sed, not grep -oP: PCRE needs a UTF-8 locale, which is not guaranteed.
+          ADDON_VERSION=$(sed -n 's/^version:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' addon/oak_camera/config.yaml)
           if [ "${ADDON_VERSION}" != "${{ steps.v.outputs.version }}" ]; then
             echo "::error::addon/oak_camera/config.yaml says ${ADDON_VERSION}, the tag says ${{ steps.v.outputs.version }}"
             exit 1
@@ -231,8 +232,11 @@ jobs:
         run: |
           V="${{ needs.check.outputs.version }}"
           # Take the lines between this version heading and the next one.
-          awk -v ver="$V" '
-            $0 ~ "^## +\\[?" ver "\\]?" { found=1; next }
+          # Match the heading exactly. Building a regex from the version
+          # string turned "[?" into a character class, which then matched
+          # every later heading too and swallowed the whole file.
+          awk -v want="## $V" '
+            $0 == want { found=1; next }
             found && /^## / { exit }
             found { print }
           ' CHANGELOG.md > notes.md

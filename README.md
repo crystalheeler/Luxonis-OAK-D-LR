@@ -1,72 +1,139 @@
-# OAK Camera — Home Assistant Add-on
+# Luxonis OAK-D LR Camera
 
-A Home Assistant add-on for the **Luxonis OAK-D LR PoE** camera. Runs on-device AI object detection via DepthAI, streams live video, records motion clips, and integrates natively with Home Assistant.
+On-device AI object detection for the **Luxonis OAK-D LR PoE** camera. Runs as a
+Home Assistant add-on or as a standalone program on Windows and Linux. Both use
+the same code, so both get the same features.
+
+[![Add repository to Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fcrystalheeler%2FLuxonis-OAK-D-LR)
 
 ---
 
 ## Features
 
-- **Live RTSP stream** via mediamtx, embeddable in HA dashboards
-- **On-device AI detection** — YOLOv6n, MobileNet SSD, or YOLO11n
+- **Live RTSP stream** through [mediamtx](https://github.com/bluenviron/mediamtx), for a Home Assistant dashboard or any other client
+- **On-device AI detection** — YOLOv6n, MobileNet SSD, or YOLO11n, running on the camera
 - **Per-object confidence thresholds** for all 80 COCO classes
-- **Motion recording** to `/media/oak_recordings/` with pre-roll buffer
-- **Filename tagging** — detected objects appended to clip filenames
-- **HA Ingress settings panel** — live feed + detection settings inside HA
-- **Storage monitoring** — HA sensor + persistent notifications
-- **HA events** — `oak_camera_motion_started`, `oak_camera_motion_stopped`, `oak_camera_storage_alert`
+- **Motion recording** to MP4, with a 3 second pre-roll buffer
+- **Filename tagging** — the detected object names go into each clip filename
+- **Web settings panel** with a live feed, on port 8767
+- **Storage monitoring** — a Home Assistant sensor plus notifications
+- **Home Assistant events** — `oak_camera_motion_started`, `oak_camera_motion_stopped`, `oak_camera_storage_alert`
 
 ---
 
-## Requirements
+## Install
 
-- Raspberry Pi 4 running Home Assistant OS (aarch64)
-- Luxonis OAK-D LR PoE camera on the same network
-- PoE switch or injector for the camera
+### Home Assistant add-on
 
----
+1. Click the badge above, or go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories** and add
+   `https://github.com/crystalheeler/Luxonis-OAK-D-LR`.
+2. Install **OAK-D LR Camera**.
+3. Set `camera_ip` on the Configuration tab.
+4. Start the add-on. **OAK Camera** then appears in the sidebar.
 
-## Installation
+The add-on installs a prebuilt image from GHCR, so it does not compile anything
+on your Raspberry Pi.
 
-1. Copy the `oak_camera_app` folder to your HA `addons` Samba share
-2. In HA: **Settings → Add-ons → Add-on store** (three-dot menu) → **Check for updates**
-3. Install **OAK-D LR Camera** from Local add-ons
-4. Configure in the add-on Settings tab (see Configuration below)
-5. Start the add-on
+Requirements: Home Assistant OS on `aarch64` or `amd64`, and the camera on the
+same network through a PoE switch or injector.
 
----
+### Windows, portable
 
-## YOLO11n Setup (optional)
+1. Download `OakCamera-<version>-win64.zip` from the
+   [latest release](https://github.com/crystalheeler/Luxonis-OAK-D-LR/releases/latest).
+2. Unzip it anywhere you can write to. Avoid `C:\Program Files`.
+3. Set `camera_ip` in `oak_config.yaml`.
+4. Run `OakCamera.exe`. A camera icon appears next to the clock.
+5. Right-click the icon and choose **Open settings**.
 
-YOLO11n requires a one-time conversion on a Windows PC before installation:
+No installer and no administrator rights. Windows Firewall asks once for
+`OakCamera.exe` and once for `mediamtx.exe`. See
+[windows/README-windows.md](windows/README-windows.md) for the full guide.
 
-1. Place `prepare_yolo11n.bat`, `prepare_yolo11n.ps1`, and `prepare_yolo11n_windows.py` in the `oak_camera_app` folder
-2. Double-click `prepare_yolo11n.bat` and follow the prompts
-3. Copy the generated `yolo11n.tar.xz` into `oak_camera_app`
-4. Copy the folder to your HA addons share and install/update
+### Linux, from source
 
-If `yolo11n.tar.xz` is absent the add-on falls back to yolov6-nano automatically.
+```bash
+git clone https://github.com/crystalheeler/Luxonis-OAK-D-LR.git
+cd Luxonis-OAK-D-LR
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt \
+  --extra-index-url https://artifacts.luxonis.com/artifactory/luxonis-python-snapshot-local/
+sudo apt install ffmpeg          # for the RTSP stream
+cp windows/oak_config.yaml src/oak_config.yaml   # then edit camera_ip
+python src/oak_launcher.py
+```
+
+Install [mediamtx](https://github.com/bluenviron/mediamtx) on your `PATH` for
+RTSP. Without `ffmpeg` or `mediamtx` the RTSP stream turns off, and the MJPEG
+feed, snapshots and recording keep working.
 
 ---
 
 ## Configuration
 
+Both deployments read the same keys. The add-on reads them from the
+Configuration tab, and the portable build reads them from `oak_config.yaml`.
+
 | Option | Default | Description |
 |---|---|---|
-| `camera_ip` | (auto) | Leave blank for UDP autodiscovery |
-| `mjpeg_port` | 8765 | RTSP stream port |
-| `fps` | 15 | Camera FPS (5–30; keep ≤ 20 on Pi 4) |
-| `detection_model` | yolov6-nano | `yolov6-nano`, `luxonis/mobilenet-ssd:300x300`, or `yolo11n` |
-| `filename_tag_objects` | true | Append detected objects to clip filenames |
-| `storage_alert_enabled` | true | Enable storage alerts |
-| `storage_alert_threshold` | 50 | Alert when storage exceeds this % |
-| `ha_url` | homeassistant.local:8123 | Home Assistant URL |
-| `ha_token` | | Long-lived access token |
+| `camera_ip` | (empty) | Camera IP address. Empty searches for a USB device. |
+| `mjpeg_port` | 8765 | RTSP port. The snapshot server uses this plus one. |
+| `fps` | 15 | 5 to 30. Keep it at 20 or below on a Raspberry Pi 4. |
+| `detection_model` | `yolov6-nano` | `yolov6-nano`, `luxonis/mobilenet-ssd:300x300`, or `yolo11n` |
+| `filename_tag_objects` | true | Put the detected object names in each clip filename. |
+| `storage_alert_enabled` | true | Watch the recordings drive. |
+| `storage_alert_threshold` | 50 | Alert above this percentage. |
+| `ha_url` | `http://homeassistant.local:8123` | Home Assistant address. |
+| `ha_token` | (empty) | Long-lived access token. Empty turns the integration off. |
+| `models_dir` | see below | Folder holding `yolo11n.tar.xz`. |
 
-**Per-object confidence and detection toggles** are managed in the built-in settings panel at the "OAK Camera" sidebar entry in HA (or `http://<ha-ip>:8767/`).
+Per-object toggles and confidence values live in the web settings panel, not in
+this file. Open it from the Home Assistant sidebar, from the tray icon, or at
+`http://<host>:8767/`.
+
+### Where files go
+
+| | Home Assistant add-on | Portable |
+|---|---|---|
+| Settings and log | `/data` | `data\` beside the executable |
+| Recordings | `/media/oak_recordings` | `recordings\` beside the executable |
+| Models | `/media/oak_models` | `models\` beside the executable |
+
+Override any of them with `recordings_dir`, `data_dir` and `models_dir` in the
+config, or with the `OAK_RECORDINGS_DIR`, `OAK_DATA_DIR` and `OAK_MODELS_DIR`
+environment variables. A portable build that cannot write beside its executable
+falls back to `%LOCALAPPDATA%\OakCamera`.
+
+### Ports
+
+| Port | Use |
+|---|---|
+| 8765 | RTSP stream, at `rtsp://<host>:8765/stream` |
+| 8766 | JPEG snapshot, at `http://<host>:8766/snapshot` |
+| 8767 | Settings panel and the live MJPEG feed |
+| 8764 | Held open internally to stop a second copy from starting |
 
 ---
 
-## HA Integration
+## YOLO11n, optional
+
+YOLO11n needs a one-time conversion on a PC with more memory than a Pi:
+
+```bash
+pip install ultralytics blobconverter "luxonis-tools @ git+https://github.com/luxonis/tools.git"
+python tools/prepare_yolo11n_windows.py
+```
+
+Copy the resulting `yolo11n.tar.xz` into the models folder from the table above,
+then select `yolo11n` as the model. Without that file the program falls back to
+`yolov6-nano` and says so in the log.
+
+---
+
+## Home Assistant integration
+
+Both deployments send events and the storage sensor, so the standalone build on
+a Windows PC can still drive Home Assistant. Fill in `ha_url` and `ha_token`.
 
 Add to `configuration.yaml`:
 
@@ -74,8 +141,8 @@ Add to `configuration.yaml`:
 camera:
   - platform: generic
     name: OAK-D LR
-    still_image_url: http://<ha-ip>:8766/snapshot
-    stream_source: rtsp://<ha-ip>:8765/stream?transport=tcp
+    still_image_url: http://<host>:8766/snapshot
+    stream_source: rtsp://<host>:8765/stream?transport=tcp
 
 sensor:
   - platform: template
@@ -85,6 +152,8 @@ sensor:
         value_template: "{{ states('sensor.oak_camera_storage') }}%"
         unit_of_measurement: "%"
 ```
+
+See [ha_configuration.yaml](ha_configuration.yaml) for automation examples.
 
 ### Events
 
@@ -96,24 +165,71 @@ sensor:
 
 ---
 
-## Architecture
+## Repository layout
 
 ```
-Thread 1  camera      Captures raw frames from OAK-D LR via DepthAI v3
-Thread 2  detection   Per-object confidence filtering + overlay drawing
-Thread 3  rtsp        Pushes display frames to ffmpeg → mediamtx
-Thread 4  recorder    Writes MP4 clips to /media/oak_recordings/
-Thread 5  snapshot    Updates JPEG for HA dashboard still image
-Thread 6  http        Serves snapshot on port 8766
-Thread 7  storage     Monitors disk usage every 5 minutes
-Thread 8  ingress     HA Ingress panel on port 8767 (settings + live feed)
+src/        shared Python for every deployment
+  oak_launcher.py   entry point: reads config, starts mediamtx, runs the bridge
+  oak_bridge.py     the 8 thread pipeline
+  oak_paths.py      per-platform folder resolution
+  oak_logging.py    rotating log file
+  oak_runtime.py    binary staging, instance guard, restart
+  oak_tray.py       Windows tray icon
+  settings_page.py  the web panel
+addon/      Home Assistant add-on manifest
+docker/     multi-architecture image for the add-on
+windows/    PyInstaller spec, portable config, icon
+tools/      YOLO11n preparation and icon generation
+```
+
+### Pipeline
+
+```
+Thread 1  camera      Captures raw frames from the OAK-D LR through DepthAI v3
+Thread 2  detection   Per-object confidence filtering and overlay drawing
+Thread 3  rtsp        Pushes display frames to ffmpeg, then to mediamtx
+Thread 4  recorder    Writes MP4 clips with a pre-roll buffer
+Thread 5  snapshot    Updates the JPEG for the dashboard still image
+Thread 6  http        Serves the snapshot on port 8766
+Thread 7  storage     Checks disk usage every 5 minutes
+Thread 8  ingress     Settings panel and live feed on port 8767
+```
+
+---
+
+## Building
+
+### The Windows executable
+
+```bash
+pip install -r windows/requirements-windows.txt \
+  --extra-index-url https://artifacts.luxonis.com/artifactory/luxonis-python-snapshot-local/
+# Put mediamtx.exe and ffmpeg.exe in windows/bin/ to bundle them.
+pyinstaller --clean --noconfirm windows/oak_camera.spec
+```
+
+### The add-on image
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -f docker/Dockerfile .
+```
+
+### A release
+
+Push a tag. The [workflow](.github/workflows/release.yml) then builds the
+Windows ZIP, pushes the image to GHCR, and publishes a Release with both:
+
+```bash
+# Bump version: in addon/oak_camera/config.yaml to match, and sync the changelog.
+cp CHANGELOG.md addon/oak_camera/CHANGELOG.md
+git tag v2.5.0 && git push origin v2.5.0
 ```
 
 ---
 
 ## Changelog
 
-See [CHANGELOG.md](oak_camera_app/CHANGELOG.md) for full version history.
+See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
