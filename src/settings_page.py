@@ -26,7 +26,23 @@ CATEGORY_CLASSES = {
     "outdoor":     ["traffic light","fire hydrant","stop sign","parking meter","bench"],
 }
 
-def build_settings_html():
+def build_settings_html(show_shutdown: bool = True):
+    """Render the settings page.
+
+    show_shutdown is False inside the Home Assistant add-on. The Supervisor
+    owns the container lifecycle there: it restarts the container after the
+    process exits, so the button stopped the camera feed and the add-on came
+    straight back. Home Assistant has its own Stop control for that.
+    """
+    if show_shutdown:
+        shutdown_button = (
+            '\n    <button class="btn btn-stop" onclick="shutdownApp()"'
+            ' title="Stop the program. You must then start it again by hand.">'
+            '&#x23FB; Shut down</button>'
+        )
+    else:
+        shutdown_button = ''
+
     sections_html = ""
     for (display_name, cat_key, accent) in CATEGORY_ORDER:
         classes = CATEGORY_CLASSES[cat_key]
@@ -131,9 +147,7 @@ body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-ser
     <button class="btn btn-reload"   onclick="loadSettings()">&#x21ba; Reload</button>
     <button class="btn btn-reset"    onclick="resetSettings()">Reset defaults</button>
     <button class="btn btn-download" onclick="exportSettings()">&#x2913; Save to file</button>
-    <button class="btn btn-save"     onclick="saveSettings()">Save &amp; Apply</button>
-    <button class="btn btn-stop"     onclick="shutdownApp()"
-            title="Stop the program. Standalone builds must then be started again by hand.">&#x23FB; Shut down</button>
+    <button class="btn btn-save"     onclick="saveSettings()">Save &amp; Apply</button>""" + shutdown_button + """
   </div>
 </div>
 <div id="status"></div>

@@ -274,7 +274,12 @@ def request_shutdown() -> None:
 # Settings persistence
 SETTINGS_PATH  = os.path.join(oak_paths.data_dir(), "oak_settings.json")
 settings_lock  = threading.Lock()
-_SETTINGS_HTML = _settings_page.build_settings_html()
+# The Shut down button appears only outside Home Assistant. Inside the
+# add-on the Supervisor owns the container lifecycle: it restarts the
+# container after the process exits, so the button stopped the camera feed
+# and the add-on came straight back, holding the camera.
+_SETTINGS_HTML = _settings_page.build_settings_html(
+    show_shutdown=not oak_paths.is_ha_addon())
 
 
 SETTINGS_VERSION = "2.3.3"  # bump this whenever defaults change
@@ -1018,6 +1023,11 @@ class IngressHandler(BaseHTTPRequestHandler):
                              args=(shutdown_children,),
                              name="restart", daemon=False).start()
         elif path == "/api/shutdown":
+            if oak_paths.is_ha_addon():
+                log.warning("Shutdown refused — stop the add-on from Home Assistant")
+                self._send(409, "application/json",
+                           b'{"ok":false,"error":"Stop the add-on from Home Assistant."}')
+                return
             self._send(200, "application/json", b'{"ok":true}')
             log.info("Shutdown requested via settings panel")
             threading.Thread(target=request_shutdown,

@@ -1,5 +1,23 @@
 # OAK-D LR Camera — Changelog
 
+## 3.0.1
+Fixes the Windows build opening two console windows and giving no sign that it started.
+
+### Changes & improvements
+- **The settings page opens at startup.** The program has no window of its own, so this is how you see that it is running. Turn it off with `open_settings_on_start` in `oak_config.yaml`.
+- **The Shut down button no longer appears in the Home Assistant panel.** Home Assistant's own Stop control is the one that works there.
+
+### Bugs fixed
+- **Two console windows opened on Windows.** mediamtx and ffmpeg each received a console of their own, because a windowed parent has none to share. Both now start without one.
+- **Shut down did not stop the add-on.** The process exited, the feed stopped, and the Supervisor restarted the container, which then held the camera again.
+- **The release checks failed on any machine already running the program.** The test bound the live marker port. It now picks a free one.
+
+### Known issues
+- **Only one host can hold the camera.** Stop the add-on before you point the Windows build at the same camera.
+- **The Windows build is not signed.** SmartScreen warns on first run. Choose More info, then Run anyway.
+- **Windows Firewall prompts twice.** Once for `OakCamera.exe` and once for `mediamtx.exe`.
+- **A new container image is private.** Set the package to public or Home Assistant cannot pull it.
+
 ## 3.0.0
 Runs standalone on Windows and Linux as well as a Home Assistant add-on, from one source tree.
 

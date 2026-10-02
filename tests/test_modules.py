@@ -225,6 +225,20 @@ try:
 except ImportError as e:
     print(f"  SKIP  oak_tray needs pystray: {e}")
 
+# ============================================================ settings page
+print(chr(10) + "[settings_page]")
+import settings_page
+
+_on  = settings_page.build_settings_html(show_shutdown=True)
+_off = settings_page.build_settings_html(show_shutdown=False)
+check("the standalone page offers Shut down", "Shut down" in _on)
+check("the add-on page hides Shut down", "Shut down" not in _off)
+check("hiding it removes exactly one button",
+      _off.count("<button") == _on.count("<button") - 1,
+      f"{_on.count('<button')} vs {_off.count('<button')}")
+check("every other control survives",
+      all(t in _off for t in ("Save &amp; Apply", "Reload", "Reset defaults")))
+
 # ============================================================ icon
 print("\n[icon]")
 ico = os.path.join(REPO, "windows", "oak_camera.ico")

@@ -222,7 +222,7 @@ Windows ZIP, pushes the image to GHCR, and publishes a Release with both:
 ```bash
 # Bump version: in addon/oak_camera/config.yaml to match, and sync the changelog.
 cp CHANGELOG.md addon/oak_camera/CHANGELOG.md
-git tag v3.0.0 && git push origin v3.0.0
+git tag v3.0.1 && git push origin v3.0.1
 ```
 
 ---
@@ -243,7 +243,7 @@ package that fails one.
 
 See [CHANGELOG.md](CHANGELOG.md). Each release has an audit note holding the
 evidence, the measurements and the gaps that the changelog leaves out:
-[docs/audit-3.0.0.md](docs/audit-3.0.0.md).
+[docs/audit-3.0.1.md](docs/audit-3.0.1.md).
 
 ---
 
