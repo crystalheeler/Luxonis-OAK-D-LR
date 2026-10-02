@@ -222,14 +222,28 @@ Windows ZIP, pushes the image to GHCR, and publishes a Release with both:
 ```bash
 # Bump version: in addon/oak_camera/config.yaml to match, and sync the changelog.
 cp CHANGELOG.md addon/oak_camera/CHANGELOG.md
-git tag v2.5.0 && git push origin v2.5.0
+git tag v3.0.0 && git push origin v3.0.0
 ```
+
+---
+
+## Release checks
+
+```bash
+python tests/test_modules.py     # 45 checks on the support modules
+python tests/privacy_scan.py     # no personal data in tracked files
+```
+
+Both run in the `check` job of the release workflow. A tag push cannot build a
+package that fails one.
 
 ---
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md).
+See [CHANGELOG.md](CHANGELOG.md). Each release has an audit note holding the
+evidence, the measurements and the gaps that the changelog leaves out:
+[docs/audit-3.0.0.md](docs/audit-3.0.0.md).
 
 ---
 

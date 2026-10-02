@@ -1,11 +1,13 @@
 name: Release
 
 # One tag push produces every artifact a user needs:
-#   - OakCamera-<version>-win64.zip  attached to the GitHub Release
+#   - OakCamera-<version>-win64.zip  attached to a DRAFT GitHub Release
 #   - ghcr.io/<owner>/luxonis-oak-d-lr:<version>  for the Home Assistant add-on
 #
+# The Release is staged as a draft. Publishing it is a separate manual step.
+#
 # Tag a release with:
-#   git tag v2.5.0 && git push origin v2.5.0
+#   git tag v3.0.0 && git push origin v3.0.0
 on:
   push:
     tags:
@@ -64,7 +66,40 @@ jobs:
           echo "Changelogs match."
 
       - name: Python files must compile
-        run: python -m compileall -q src tools
+        run: python -m compileall -q src tools tests
+
+      - name: Release checks
+        run: |
+          pip install --quiet PyYAML Pillow
+          python tests/test_modules.py
+
+      # The owner's rule: no real name, email address, local path, network
+      # address or device serial in anything published from this repository.
+      # The owner's rule: no real name, email address, local path,
+      # network address or device serial in anything published from
+      # this repository. The scanner also reports commit identities.
+      - name: Privacy scan
+        run: python tests/privacy_scan.py
+
+      - name: Changelog structure
+        run: |
+          python - <<'PY'
+          import sys
+          lines = open("CHANGELOG.md", encoding="utf-8").read().split("\n")
+          vers = [l[3:].strip() for l in lines if l.startswith("## ")]
+          bad = False
+          dupes = sorted({v for v in vers if vers.count(v) > 1})
+          if dupes:
+              print(f"::error::duplicate changelog headings: {dupes}")
+              bad = True
+          key = lambda v: tuple(int(x) for x in v.split("."))
+          for i in range(1, len(vers)):
+              if key(vers[i]) > key(vers[i - 1]):
+                  print(f"::error::{vers[i]} is listed below {vers[i - 1]}")
+                  bad = True
+          print(f"{len(vers)} sections, {len(set(vers))} distinct")
+          sys.exit(1 if bad else 0)
+          PY
 
   # ---------------------------------------------------------------------------
   windows:
@@ -217,7 +252,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   release:
-    name: Publish the GitHub Release
+    name: Stage the draft Release
     needs: [check, windows, image]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
@@ -264,11 +299,14 @@ jobs:
           EOF
           cat notes.md
 
-      - name: Create the Release
+      # A push sends commits and tags. A Release is a separate step and
+      # needs its own order, so this stages a DRAFT and stops. Publishing it
+      # stays a human action in the GitHub Releases page.
+      - name: Stage a draft Release
         uses: softprops/action-gh-release@v2
         with:
           name: "v${{ needs.check.outputs.version }}"
           body_path: notes.md
           files: OakCamera-*-win64.zip
-          draft: false
+          draft: true
           prerelease: false

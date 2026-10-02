@@ -1,61 +1,31 @@
 # OAK-D LR Camera — Changelog
 
-## 2.5.0
-Runs standalone on Windows and Linux as well as a Home Assistant add-on. One
-source tree now serves three deployments.
+## 3.0.0
+Runs standalone on Windows and Linux as well as a Home Assistant add-on, from one source tree.
 
-### New: portable Windows build
-- `OakCamera.exe` is one file. Unzip it anywhere and double-click it. No
-  installer and no administrator rights
-- A tray icon holds Open settings, View log, Open data folder, Open recordings
-  folder, Start with Windows, Restart and Quit. It is the only way to quit a
-  windowed build, because there is no console and no Ctrl-C
-- Child binaries are copied to a fixed `bin` folder on first run. A onefile
-  bundle unpacks to a new temporary path on every launch, and Windows Firewall
-  keys its rules on the binary path, so without this the user would answer a
-  firewall prompt on every launch
-- A second copy cannot start. The first holds port 8764, so two processes never
-  fight over ports 8765 to 8767 or over the camera
+### Changes & improvements
+- **Portable Windows build.** `OakCamera.exe` is one file. Unzip it anywhere and run it.
+- **System tray icon.** It opens the settings page and the log, toggles start with Windows, and restarts or quits the program.
+- **Log file.** The program writes `oak_camera.log` and rotates it. It also captures mediamtx and ffmpeg output.
+- **One launcher for every deployment.** `oak_launcher.py` replaces `run.sh` and reads the add-on options file directly.
+- **Prebuilt add-on image.** The add-on installs from a container registry. It no longer builds on the user's device.
+- **Per-platform folders.** Settings, recordings and models resolve per deployment. Each one accepts an override.
+- **Optional ffmpeg.** The RTSP stream turns off without it. The MJPEG feed, snapshots and recording continue.
+- **Shut down button** on the settings page, for a deployment with no tray icon.
+- **Single instance guard.** A second copy exits instead of competing for the camera.
+- **One release workflow.** A tag builds the Windows package and the add-on image.
 
-### New: logging to a file
-- Rotating log at `oak_camera.log`, 2 MB per file and 5 files kept
-- mediamtx output and ffmpeg errors now reach the log. Both previously went to
-  stdout or to `DEVNULL`, so an RTSP failure left no trace
-- A shim replaces `sys.stdout` and `sys.stderr` when PyInstaller sets them to
-  `None` in a windowed build. A bare `print()` would otherwise raise
-  `AttributeError` on `None.write`
+### Bugs fixed
+- **The RTSP stream failed on every port except 8765.** The server config now follows the configured port.
+- **Restart stopped the program for good outside Home Assistant.** The process now restarts itself.
+- **A restart wrote a traceback to the log.** The RTSP publisher now exits cleanly.
 
-### Changed: one launcher replaces run.sh
-- `run.sh` read its settings through bashio, so it only ran inside the
-  Supervisor. `oak_launcher.py` reads `/data/options.json` directly, which is
-  the same file bashio read, then falls back to `oak_config.yaml` beside the
-  executable. The add-on interface is unchanged
-- The add-on now installs a prebuilt multi-architecture image from GHCR instead
-  of building on the user's Raspberry Pi
-- Dropped the unused `DETECT_*` and `CONFIDENCE_*` environment variables. The
-  settings panel has been the only source of per-object thresholds since 2.3.0
-- Every writable folder resolves per platform, with an environment override. A
-  portable build that cannot write beside its executable falls back to
-  `%LOCALAPPDATA%\OakCamera`
-
-### Fixed
-- The RTSP stream broke at any `mjpeg_port` other than 8765. `mediamtx.yml`
-  hardcoded `rtspAddress: :8765` while ffmpeg published to the configured port,
-  so the two no longer met. The launcher now generates the config from the
-  configured port
-- The Restart button sent `SIGTERM` to the process and relied on the S6
-  supervisor to bring it back. Windows has no `SIGTERM` and a portable build has
-  no supervisor, so Restart would have stopped the program for good. It now
-  re-executes itself, which works on all three deployments
-
-### Other
-- ffmpeg is optional. Without it the RTSP thread logs a warning and exits, and
-  the MJPEG feed, snapshots and recording keep running. This keeps the portable
-  download roughly 150 MB smaller
-- The settings page gains a Shut down button, for a portable Linux run with no
-  tray icon
-- One tag push now builds the Windows ZIP, pushes the add-on image and publishes
-  a GitHub Release carrying both
+### Known issues
+- **The Windows build is not signed.** SmartScreen warns on first run. Choose More info, then Run anyway.
+- **Windows Firewall prompts twice.** Once for `OakCamera.exe` and once for `mediamtx.exe`.
+- **The add-on folder moved.** An earlier install from this repository needs installing again.
+- **A new container image is private.** Set the package to public or Home Assistant cannot pull it.
+- **The arm64 image builds under emulation.** The audit note gives the expected build time.
 
 ## 2.4.2
 - RTSP stream now sends one keyframe per second (`-g` set to the FPS
@@ -91,6 +61,22 @@ source tree now serves three deployments.
   same font (HERSHEY_SIMPLEX 0.38), same dark background fill (30,30,30),
   same compact padding — all three elements use a shared draw_label_box helper
 - Missing changelog entries added for versions 2.3.4 through 2.3.9 (below)
+
+## 2.3.10
+- Fixed JS syntax error introduced in 2.3.8: bare newline character inside a
+  single-quoted JS string in the confirm() dialog broke the entire script block,
+  causing live feed to show "Connecting..." and Detection Settings panel to not
+  expand. Fixed by using String.fromCharCode(10) instead of '\n' in the join call
+- Added "Set all confidence" control at top of settings panel — enter a value
+  and click Apply to blanket-set all 80 per-object confidence levels at once
+- Added "Hardware threshold" field — controls the camera-level confidence floor;
+  changes trigger a confirmation dialog offering to restart the app immediately
+  so the new value takes effect (restart handled via SIGTERM, S6 brings it back)
+- Added "Filename tag min duration (sec)" field — replaces the fixed 2-second
+  threshold with a user-adjustable value from 0 to 60 seconds (supports decimals
+  like 0.2s); setting to 0 tags all detected objects regardless of duration
+- hw_threshold and tag_duration saved to settings JSON and restored on reload
+- Added /api/restart endpoint to ingress server
 
 ## 2.3.9
 - Attempted fix for JS bare newline bug using array.join('\\n') — the join
@@ -137,22 +123,6 @@ source tree now serves three deployments.
 - Ingress server switched to ThreadingHTTPServer so MJPEG clients don't block API
 - Status box reduced to ~half size using dynamic width based on text content
 - Model name shown below timestamp in top-right corner of video overlay
-
-## 2.3.10
-- Fixed JS syntax error introduced in 2.3.8: bare newline character inside a
-  single-quoted JS string in the confirm() dialog broke the entire script block,
-  causing live feed to show "Connecting..." and Detection Settings panel to not
-  expand. Fixed by using String.fromCharCode(10) instead of '\n' in the join call
-- Added "Set all confidence" control at top of settings panel — enter a value
-  and click Apply to blanket-set all 80 per-object confidence levels at once
-- Added "Hardware threshold" field — controls the camera-level confidence floor;
-  changes trigger a confirmation dialog offering to restart the app immediately
-  so the new value takes effect (restart handled via SIGTERM, S6 brings it back)
-- Added "Filename tag min duration (sec)" field — replaces the fixed 2-second
-  threshold with a user-adjustable value from 0 to 60 seconds (supports decimals
-  like 0.2s); setting to 0 tags all detected objects regardless of duration
-- hw_threshold and tag_duration saved to settings JSON and restored on reload
-- Added /api/restart endpoint to ingress server
 
 ## 2.3.3
 - Fixed confidence levels showing as 0.6 instead of 0.7 — saved settings file
@@ -333,50 +303,3 @@ source tree now serves three deployments.
 - MJPEG HTTP stream on port 8765
 - Frame-differencing motion detection
 - Home Assistant events: oak_camera_motion_started, oak_camera_motion_stopped
-
-## 2.3.5
-- Fixed live feed not showing in ingress panel — HA ingress proxy buffers
-  multipart/x-mixed-replace streams and never flushes them to the browser
-- Stream src now set dynamically to http://<ha-host>:8767/stream (direct port)
-  bypassing the ingress proxy; settings API calls still go through ingress normally
-
-## 2.3.6
-- Fixed detection flickering and reduced detection range caused by YOLO11n
-  running slower than camera FPS on RVC2 — when the NN has no new result
-  ready, the last known detections are now reused rather than falling back
-  to an empty list, so bounding boxes stay visible between inference cycles
-- Added short grace buffer (3 frames at 15fps) before treating absence of
-  detections as motion stopped — prevents rapid on/off state cycling when
-  NN inference runs slower than camera FPS
-- Bounding boxes now visible in MJPEG live feed in the ingress panel
-  (same fix — boxes now persist across frames rather than flashing briefly)
-
-## 2.3.6
-- Fixed root cause of degraded detection: CATEGORY_ENABLED env vars were removed
-  from config.yaml in 2.3.3 but the bridge still read them, so all categories
-  showed as disabled (Active categories: []) and OBJECT_THRESHOLDS was empty
-- Fixed HARDWARE_THRESHOLD never being updated after _apply_settings_to_thresholds
-  ran — it was computed as a local variable hw but never assigned to the global,
-  so the camera always ran at the stale module-load value (0.50) regardless of
-  what the settings panel configured
-- Removed env-var category system entirely — settings panel is now sole authority
-- Added DEFAULT_SETTINGS: people + animals ON at 0.70 used when no saved file
-  exists, so first run always has sensible defaults without any configuration
-- _apply_settings_to_thresholds now merges DEFAULT_SETTINGS as base, then
-  applies saved file overrides on top — reset also returns to these defaults
-- Added persistent last_detections in camera thread so boxes stay visible between
-  NN inference cycles (fixes boxes not showing in live feed and flickering)
-- Added 3-frame grace buffer before ending detection to prevent rapid on/off cycling
-- Video overlay: status box reduced to half size; model name shown under timestamp
-
-## 2.3.7
-- Added "Set all confidence" control — enter a value and click Apply to blanket
-  set all 80 per-object confidence levels at once, then Save & Apply
-- Added "Hardware threshold" field in settings panel — controls the camera-level
-  confidence floor; anything below this is discarded on-device before reaching
-  Python. Default 0.10 lets everything through; raise it to reduce CPU load
-- hw_threshold saved in settings JSON and restored on startup/reload
-- Hardware threshold now logged each time the camera pipeline (re)connects so
-  you can confirm the value in use matches what you set in the panel
-- Note: hardware threshold changes take effect on next camera reconnect;
-  per-object confidence changes take effect immediately
