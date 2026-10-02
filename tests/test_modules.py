@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 import sys
 import tempfile
 
@@ -99,12 +100,23 @@ check("_exe_name adds .exe only on Windows",
 check("_same_path matches an equivalent path",
       oak_runtime._same_path(WORK, os.path.join(WORK, ".")))
 
-got_lock = oak_runtime.acquire_single_instance()
+# Pick a free port. The production port may be held by a real instance on
+# this machine, and the guard working is not a test failure.
+_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+_probe.bind(("127.0.0.1", 0))
+LOCK_PORT = _probe.getsockname()[1]
+_probe.close()
+
+got_lock = oak_runtime.acquire_single_instance(port=LOCK_PORT)
 check("the first instance takes the lock", got_lock is True)
-check("a second instance is refused", oak_runtime.acquire_single_instance(0.0) is False)
+check("a second instance is refused",
+      oak_runtime.acquire_single_instance(0.0, port=LOCK_PORT) is False)
 oak_runtime.release_single_instance()
-check("the lock is reusable after release", oak_runtime.acquire_single_instance() is True)
+check("the lock is reusable after release",
+      oak_runtime.acquire_single_instance(port=LOCK_PORT) is True)
 oak_runtime.release_single_instance()
+check("the production marker port is 8764",
+      oak_runtime.SINGLE_INSTANCE_PORT == 8764, oak_runtime.SINGLE_INSTANCE_PORT)
 
 # A fake binary in bin_dir must win over PATH.
 fake = os.path.join(oak_paths.bin_dir(), oak_runtime._exe_name("mediamtx"))
@@ -116,6 +128,25 @@ check("resolve_binary returns None when absent",
       oak_runtime.resolve_binary("definitely-not-a-real-binary-xyz") is None)
 check("restart_wait_seconds is zero on a cold start",
       oak_runtime.restart_wait_seconds() == 0.0)
+
+# A windowed parent has no console to share, so Windows opens a new console
+# window for every console child. 3.0.0 shipped with two of them on screen.
+flags = oak_runtime.child_creation_flags()
+if sys.platform == "win32":
+    import subprocess as _sp
+    check("child_creation_flags hides the console on Windows",
+          flags == _sp.CREATE_NO_WINDOW, hex(flags))
+else:
+    check("child_creation_flags is zero off Windows", flags == 0, flags)
+
+# Guard the two spawn sites themselves, because the helper only helps when it
+# is actually passed.
+for _mod, _name in (("oak_bridge.py", "ffmpeg"), ("oak_launcher.py", "mediamtx")):
+    _src = open(os.path.join(REPO, "src", _mod), encoding="utf-8").read()
+    _spawns = _src.count("subprocess.Popen(")
+    _flagged = _src.count("creationflags=oak_runtime.child_creation_flags()")
+    check(f"{_name} spawns with creationflags", _flagged >= 1,
+          f"{_flagged} flagged of {_spawns} Popen calls")
 os.environ[oak_runtime.RESTART_ENV] = "1"
 check("restart_wait_seconds is positive on a restart",
       oak_runtime.restart_wait_seconds() > 0)

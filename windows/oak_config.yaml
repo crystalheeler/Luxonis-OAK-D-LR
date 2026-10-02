@@ -18,6 +18,10 @@ fps: 15
 # tools/prepare_yolo11n_windows.py.
 detection_model: "yolov6-nano"
 
+# Open the settings page in your browser when the program starts. The program
+# has no window of its own, so this is how you see that it is running.
+open_settings_on_start: true
+
 # Add the detected object names to each recording filename.
 filename_tag_objects: true
 

@@ -44,6 +44,22 @@ def _same_path(a: str, b: str) -> bool:
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
+def child_creation_flags() -> int:
+    """Creation flags that keep a child process from opening a console window.
+
+    mediamtx and ffmpeg are console programs. A windowed parent has no console
+    to share, so Windows gives each child a new console window of its own. The
+    user then sees two black windows they did not ask for and cannot close
+    without stopping the stream.
+
+    CREATE_NO_WINDOW suppresses them. Their output still reaches the log,
+    because both are started with a pipe.
+    """
+    if sys.platform == "win32":
+        return subprocess.CREATE_NO_WINDOW
+    return 0
+
+
 def stage_binaries(names=CHILD_BINARIES) -> dict[str, str]:
     """Copy bundled child binaries into a fixed folder. Return name to path.
 
@@ -103,14 +119,16 @@ def resolve_binary(name: str) -> str | None:
     return shutil.which(name)
 
 
-def acquire_single_instance(timeout: float = 0.0) -> bool:
+def acquire_single_instance(timeout: float = 0.0,
+                           port: int = SINGLE_INSTANCE_PORT) -> bool:
     """Reserve the loopback marker port. Return False when already running.
 
     Double-clicking the executable twice would otherwise start two processes.
     They would then fight over ports 8765 to 8767 and over the camera itself.
 
     A restart passes a timeout so the replacement process waits for the old one
-    to release the port.
+    to release the port. A test passes its own port, so it never competes with
+    a real instance running on the same machine.
     """
     global _lock_socket
 
@@ -119,7 +137,7 @@ def acquire_single_instance(timeout: float = 0.0) -> bool:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         # No SO_REUSEADDR: the bind must fail while another process holds it.
         try:
-            sock.bind(("127.0.0.1", SINGLE_INSTANCE_PORT))
+            sock.bind(("127.0.0.1", port))
             sock.listen(1)
             _lock_socket = sock
             return True

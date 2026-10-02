@@ -562,7 +562,8 @@ def start_ffmpeg():
            "-f", "rtsp", "-rtsp_transport", "tcp", RTSP_PUBLISH_URL]
     log.info(f"Starting ffmpeg → {RTSP_PUBLISH_URL}")
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                            creationflags=oak_runtime.child_creation_flags())
     # Without a console, ffmpeg errors vanish. Copy them into the log file.
     oak_logging.drain_pipe(proc.stderr, "ffmpeg", logging.WARNING)
     return proc

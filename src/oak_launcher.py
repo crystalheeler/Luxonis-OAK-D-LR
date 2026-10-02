@@ -20,8 +20,10 @@ copies its output into the log, and stops it on shutdown.
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
+import time
 
 # The bundle puts every module in one folder. A source checkout runs from src/.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -174,7 +176,8 @@ def start_mediamtx(rtsp_port: int) -> subprocess.Popen | None:
     try:
         _mediamtx_proc = subprocess.Popen(
             [exe, cfg], stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            creationflags=oak_runtime.child_creation_flags())
     except OSError as e:
         log.error(f"Could not start mediamtx: {e}")
         return None
@@ -214,6 +217,47 @@ def _want_tray() -> bool:
     if os.environ.get("OAK_NO_TRAY", "").strip() == "1":
         return False
     return sys.platform == "win32" and oak_paths.is_frozen()
+
+
+def _want_browser(cfg: dict) -> bool:
+    """True when the settings page should open at startup.
+
+    Never in the add-on, where Home Assistant owns the sidebar panel. Never
+    when the user turns it off in the config.
+    """
+    if oak_paths.is_ha_addon():
+        return False
+    if os.environ.get("OAK_NO_BROWSER", "").strip() == "1":
+        return False
+    return bool(cfg.get("open_settings_on_start", True))
+
+
+def _open_settings_page(port: int) -> None:
+    """Open the settings page after the server has had time to bind."""
+    import threading
+    import webbrowser
+
+    url = f"http://localhost:{port}/"
+
+    def _later():
+        # ingress_thread binds a few seconds after start on a cold run.
+        for _ in range(30):
+            time.sleep(1)
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    break
+            except OSError:
+                continue
+        else:
+            log.warning(f"Settings page did not open: nothing listening on {port}")
+            return
+        log.info(f"Opening the settings page at {url}")
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            log.warning(f"Could not open a browser: {e} — open {url} by hand")
+
+    threading.Thread(target=_later, name="open-browser", daemon=True).start()
 
 
 def main() -> int:
@@ -262,6 +306,12 @@ def main() -> int:
         except Exception as e:
             log.warning(f"Tray icon unavailable: {e} — "
                         f"use the settings page to stop the program")
+
+    # A windowed build shows no window, and Windows hides a new tray icon in
+    # the overflow area. Without this the program looks like it did nothing.
+    # Opening the settings page gives the user something to see.
+    if _want_browser(cfg):
+        _open_settings_page(oak_bridge.INGRESS_PORT)
 
     oak_bridge.main()
     return 0
