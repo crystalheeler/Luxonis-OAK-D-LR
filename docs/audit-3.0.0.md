@@ -205,33 +205,35 @@ Replace each row with a measurement after the first build.
 
 ## 7. Open risks
 
-### 7.1 Commit metadata carries a real first name, and it is already public
+### 7.1 Commit metadata was rewritten (closed)
 
-Every commit in this repository is authored under a real first name and an
-email address on a personal domain. Both sit in published repository metadata,
-which the privacy rule forbids. The values are not repeated here, because this
-file is published too. Run the scanner to see them.
+Every commit was authored under a real first name and an address on a personal
+domain. Both sat in repository metadata, which the privacy rule forbids. 9 of
+those commits were public on the remote from 2026-09-30.
 
-9 commits already carry that identity on the remote, pushed 2026-09-30.
+The owner ordered the rewrite on 2026-10-02. The work done:
 
-This was not fixed in 3.0.0, for two reasons. Changing `git config user.name`
-and `user.email` sets the owner's identity, which is the owner's decision. And
-correcting the existing commits needs a history rewrite and a force push, which
-the Git rule allows only on an explicit order in the same message.
+| Step | Result |
+|---|---|
+| Backup outside the repository | A mirror clone and a bundle, both verified as a complete history |
+| Identity set | `CrystalHeeler <crystalheeler@keemail.me>`, the only authorized identifiers |
+| Commits rewritten | 14 of 14 |
+| Tags re-pointed | 9 of 9, all lightweight |
+| A second address in `repository.yaml` | Replaced across all 3 commits that held it. It was local and never published. |
+| `refs/original` backups removed, reflog expired, objects collected | 0 unreachable objects remain |
 
-To fix it going forward:
+Verified after the rewrite: 1 identity in the whole history, 0 matches for the
+old name, and 1 email address across every reachable blob, which is the
+authorized one.
 
-```bash
-git config user.name CrystalHeeler
-git config user.email <an address you are willing to publish>
-```
+**One limit.** A force push removes the branch pointer. GitHub may keep the old
+commits reachable by their exact hash until it collects them, and a fork or a
+cached view can outlive that. Only GitHub Support can purge them on demand. The
+alternative is deleting and recreating the repository, which guarantees removal
+but drops the repository's own history and settings.
 
-To correct the published history, order the rewrite. Back up the repository
-outside its folder first, as the Git rule requires.
-
-`python tests/privacy_scan.py` reports this on every run and in continuous
-integration. It warns and does not fail, because a permanent failure would
-block every build until the history is rewritten.
+`python tests/privacy_scan.py` now allows exactly two identifiers,
+`CrystalHeeler` and `crystalheeler@keemail.me`, and fails on anything else.
 
 ### 7.2 Other risks
 

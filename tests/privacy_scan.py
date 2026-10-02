@@ -40,9 +40,14 @@ IPV4 = re.compile(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b")
 # 192.168.50.x ranges are the made-up addresses the rule allows in examples.
 IP_ALLOWED = re.compile(r"^(?:0\.0\.0\.0|127\.0\.0\.1|10\.0\.0\.\d{1,3}|192\.168\.50\.\d{1,3})$")
 
-# Names that may appear. Anything else that looks like a person is for the
-# owner to judge, so this list stays short and explicit.
+# The only identifiers that may appear anywhere this project produces:
+# the name CrystalHeeler and the address below. Anything else that looks like
+# a person is a failure, so this list stays short and explicit.
 ALLOWED_NAMES = ("CrystalHeeler", "crystalheeler")
+ALLOWED_EMAILS = (
+    "crystalheeler@keemail.me",
+    "noreply@anthropic.com",    # the commit co-author trailer
+)
 
 
 def tracked_files() -> list[str]:
@@ -69,6 +74,8 @@ def scan_files() -> int:
         for n, line in enumerate(lines, 1):
             for label, pattern in PATTERNS:
                 for hit in pattern.findall(line):
+                    if label == "an email address" and hit in ALLOWED_EMAILS:
+                        continue
                     print(f"FAIL {rel}:{n}: {label}: {hit}")
                     findings += 1
             for hit in IPV4.findall(line):
@@ -92,7 +99,7 @@ def report_commit_authors() -> int:
     identities = sorted(set(l for l in out.stdout.split("\n") if l.strip()))
     flagged = [i for i in identities
                if not any(name in i for name in ALLOWED_NAMES)
-               or re.match(r"^[A-Z][a-z]+ <", i)]
+               or not any(mail in i for mail in ALLOWED_EMAILS)]
 
     print()
     print(f"Commit identities in this repository: {len(identities)}")
@@ -102,10 +109,10 @@ def report_commit_authors() -> int:
 
     if flagged:
         print()
-        print("WARNING: an identity above carries a real first name or address.")
-        print("Commit metadata publishes on push. Changing it needs:")
+        print("WARNING: an identity above is not an authorized identifier.")
+        print("Commit metadata publishes on push. To correct it:")
         print("  1. git config user.name CrystalHeeler")
-        print("  2. git config user.email <an address you are willing to publish>")
+        print("  2. git config user.email crystalheeler@keemail.me")
         print("  3. a history rewrite plus a force push for existing commits,")
         print("     which needs the owner's explicit order.")
     return 0

@@ -26,6 +26,7 @@ Runs standalone on Windows and Linux as well as a Home Assistant add-on, from on
 - **The add-on folder moved.** An earlier install from this repository needs installing again.
 - **A new container image is private.** Set the package to public or Home Assistant cannot pull it.
 - **The arm64 image builds under emulation.** The audit note gives the expected build time.
+- **The repository history was rewritten.** An existing clone cannot pull. Clone it again.
 
 ## 2.4.2
 - RTSP stream now sends one keyframe per second (`-g` set to the FPS
