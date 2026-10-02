@@ -168,38 +168,74 @@ push cannot build a package that fails one.
 
 Name every gap, because none of these ran.
 
+The v3.0.0 build ran on 2026-10-02 and closed most of these. What the smoke
+test proved, from the log it captured:
+
+| Now verified | Evidence from the build |
+|---|---|
+| `oak_bridge.py` imports and runs inside the bundle | It logged its model, FPS, thresholds and all 8 threads |
+| depthai loads from the bundle | It reached `Auto-discovering OAK-D LR` and returned `No available devices` |
+| The camera retry loop works | 4 discovery attempts at 10 s intervals, no crash |
+| The Windows executable builds | 148.9 MB ZIP, built in 3.5 min |
+| The tray icon starts | `Tray icon started` on a headless runner |
+| mediamtx starts and its output reaches the log | Its RTSP, RTMP, HLS, WebRTC and SRT listeners all logged through the pipe drain |
+| ffmpeg starts | `Starting ffmpeg` with the correct publish target |
+| Every server binds | Ports 8766 and 8767 both logged |
+| The storage monitor works | `Storage: 2.4% used (3.7 GB / 150.0 GB)` |
+| Settings load and apply | `11 active objects, hw threshold 0.10` |
+| Per-platform folders resolve | Recordings resolved beside the executable |
+| The container image builds | Both `linux/amd64` and `linux/arm64`, public on the registry |
+| The release workflow | Ran twice. The first attempt failed and is documented in 5.1. |
+
+Still not tested:
+
 | Not tested | Reason |
 |---|---|
-| `oak_bridge.py` at runtime | depthai is not installed on the build machine. The file compiles but was never imported. |
-| The camera pipeline end to end | No OAK-D LR camera attached. |
-| The Windows executable | PyInstaller never ran. Bundle size and startup time in section 6 are estimates, not measurements. |
-| The container image | Docker is not installed on the build machine. The Dockerfile is unbuilt. |
-| The multi-architecture manifest | Needs the image build. |
-| The Home Assistant add-on install | Needs the image published and a Supervisor instance. |
-| `cv2.VideoWriter` inside a bundle | Needs the PyInstaller build. See the risk in section 7. |
-| The tray icon | pystray is not installed on the build machine. Only the import path and the artwork were checked. |
-| The Windows Firewall prompt behaviour | Needs a clean Windows machine. |
-| The restart handover | Needs a running process on each platform. |
-| The release workflow | Never run. No tag has been pushed. |
+| The camera pipeline end to end | No OAK-D LR camera attached to the build runner. |
+| `cv2.VideoWriter` inside the bundle | Needs a motion event, which needs a camera. The risk in 7.2 stands. |
+| The Home Assistant add-on install | Needs a Supervisor instance. The image is published and public. |
+| The Windows Firewall prompt behaviour | Needs a clean Windows machine. The build runner has no interactive desktop. |
+| The restart handover | Needs a running process and a request to `/api/restart`. |
+| The tray menu actions | The icon starts, but no click was sent. |
+| Startup time from a double-click | The smoke test backgrounds the process and does not time the first frame. |
 
-The CI smoke test in `.github/workflows/release.yml` closes the third, seventh
-and eighth gaps on the first tag push. It starts the executable, waits 75 s, and
-asserts that the log reports portable mode, that logging started, that mediamtx
-was staged, and that no traceback appeared.
+### 5.1 The first build failed
+
+The first v3.0.0 tag push failed the Windows job in 0.8 min:
+
+```
+ERROR: script 'windows/src/oak_launcher.py' not found
+```
+
+PyInstaller resolves the script path in `Analysis()` relative to the spec file's
+folder. The `os.path.isfile` checks in the same spec resolve relative to the
+working directory. The spec mixed the two, so the binary lookups found their
+files from the repository root while `Analysis` looked under `windows/`.
+
+Every path now derives from `SPECPATH`. The release job was skipped on that
+run, so nothing was packaged or published from a failing check. The tag was
+re-cut on the fix, because 3.0.0 had never published.
 
 ---
 
-## 6. Estimates, not measurements
+## 6. Measurements
 
-| Item | Estimate |
-|---|---|
-| Bundle without ffmpeg | 180 MB to 250 MB |
-| Bundle with ffmpeg | 300 MB to 400 MB |
-| Onefile startup on a solid state drive | 3 s to 10 s |
-| First arm64 image build under emulation | 20 min to 40 min |
-| Later image builds with the cache | Much shorter, unmeasured |
+Taken from the v3.0.0 build on 2026-10-02. The estimates this section carried
+before the build are replaced.
 
-Replace each row with a measurement after the first build.
+| Item | Estimate before | Measured |
+|---|---|---|
+| ZIP with ffmpeg bundled | 300 MB to 400 MB | **148.9 MB** |
+| Windows job, whole build | not estimated | **3.5 min** |
+| Multi-architecture image, cold cache | 20 min to 40 min | **8.3 min** |
+| Multi-architecture image, warm cache | unmeasured | **0.6 min** |
+| Release checks job | not estimated | **0.2 min** |
+
+The ZIP came in at 40% of the lower estimate. The onefile compression and the
+`excludes` list in the spec account for the difference.
+
+Still unmeasured: startup time from a double-click, and the extracted size on
+disk. The smoke test backgrounds the process, so it times neither.
 
 ---
 
@@ -274,9 +310,16 @@ released version falsifies the record.
 
 ## 9. Release state
 
-Steps 1 to 3 of the release sequence are done: checks run, changelog written,
-work committed.
+All 6 steps are done, on the owner's order of 2026-10-02.
 
-Steps 4 to 6 are not started. No tag exists, no package was built, nothing was
-pushed, and no Release was published. The workflow now stages a draft Release,
-so a tag push cannot publish on its own.
+| Step | Result |
+|---|---|
+| 1 Checks and tests | 45 module checks, the privacy scan, the changelog structure check, YAML parse and compile. All passed. |
+| 2 Changelog | Written in the three-section format, 28 lines. |
+| 3 Commit | 3 commits on main. |
+| 4 Tag | `v3.0.0`, annotated, tagged as CrystalHeeler. |
+| 5 Build | 148.9 MB ZIP, plus a two-architecture image on the registry. |
+| 6 Push and publish | main and 10 tags force pushed. The Release is published. |
+
+The workflow stages a draft, so the publish was a separate manual step, as the
+Git rule requires.
