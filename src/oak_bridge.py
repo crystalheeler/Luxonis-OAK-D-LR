@@ -771,20 +771,34 @@ def rtsp_thread():
         return
     time.sleep(2)
 
-    while True:
+    while not shutdown_event.is_set():
         try:
             frame = rtsp_q.get(timeout=5)
         except queue.Empty:
             continue
-        if ffmpeg_proc.poll() is not None:
+
+        # shutdown_children sets ffmpeg_proc to None, so re-read it once and
+        # leave the loop if the program is stopping. Without this check a
+        # restart raises AttributeError on None.poll and writes a traceback to
+        # the log, which is the only diagnostic a windowed build has.
+        proc = ffmpeg_proc
+        if proc is None:
+            break
+
+        if proc.poll() is not None:
             log.warning("ffmpeg died — restarting...")
             ffmpeg_proc = start_ffmpeg(); time.sleep(2)
+            continue
         try:
-            ffmpeg_proc.stdin.write(frame.tobytes())
-            ffmpeg_proc.stdin.flush()
+            proc.stdin.write(frame.tobytes())
+            proc.stdin.flush()
         except (BrokenPipeError, OSError):
+            if shutdown_event.is_set():
+                break
             log.warning("ffmpeg pipe broken — restarting...")
             ffmpeg_proc = start_ffmpeg(); time.sleep(2)
+
+    log.info("RTSP publisher stopped")
 
 # ==============================================================================
 # Thread 4 — Recorder  (tracks per-object sighting duration for filename tags)
