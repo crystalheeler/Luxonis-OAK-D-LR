@@ -16,7 +16,14 @@
 import os
 from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 
-BIN_DIR = os.path.join("windows", "bin")
+# PyInstaller resolves the script path in Analysis() relative to THIS file's
+# folder, not to the working directory. Mixing the two made the build look for
+# windows/src/oak_launcher.py. Every path below is absolute and derived from
+# SPECPATH, which PyInstaller sets to this file's folder.
+ROOT    = os.path.abspath(os.path.join(SPECPATH, os.pardir))
+SRC_DIR = os.path.join(ROOT, "src")
+WIN_DIR = os.path.join(ROOT, "windows")
+BIN_DIR = os.path.join(WIN_DIR, "bin")
 
 # --- child executables --------------------------------------------------------
 # These land at the bundle root. oak_runtime.stage_binaries copies them to a
@@ -33,7 +40,7 @@ for name in ("mediamtx.exe", "ffmpeg.exe"):
 datas = [
     # Default config. oak_launcher writes nothing over an existing copy beside
     # the executable, so a user edit survives an upgrade.
-    (os.path.join("windows", "oak_config.yaml"), "."),
+    (os.path.join(WIN_DIR, "oak_config.yaml"), "."),
 ]
 hiddenimports = []
 
@@ -64,11 +71,15 @@ except Exception as exc:
 hiddenimports += [
     "pystray._win32",       # pystray picks its backend at runtime
     "PIL._tkinter_finder",
+    # depthai ships as a single extension module, not a package, so collect_all
+    # above cannot walk it. Name it directly and let the import analysis pull
+    # the .pyd and its libraries.
+    "depthai",
 ]
 
 a = Analysis(
-    ["src/oak_launcher.py"],
-    pathex=["src"],
+    [os.path.join(SRC_DIR, "oak_launcher.py")],
+    pathex=[SRC_DIR],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -99,8 +110,8 @@ exe = EXE(
     runtime_tmpdir=None,
     console=False,      # windowed: oak_logging writes the log file instead
     disable_windowed_traceback=False,
-    icon=os.path.join("windows", "oak_camera.ico")
-         if os.path.isfile(os.path.join("windows", "oak_camera.ico")) else None,
-    version=os.path.join("windows", "version_info.txt")
-            if os.path.isfile(os.path.join("windows", "version_info.txt")) else None,
+    icon=os.path.join(WIN_DIR, "oak_camera.ico")
+         if os.path.isfile(os.path.join(WIN_DIR, "oak_camera.ico")) else None,
+    version=os.path.join(WIN_DIR, "version_info.txt")
+            if os.path.isfile(os.path.join(WIN_DIR, "version_info.txt")) else None,
 )
